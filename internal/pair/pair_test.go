@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
-	"path/filepath"
 	"testing"
 
 	"github.com/singularityos-lab/sinty-cored/internal/wire"
@@ -112,17 +111,5 @@ func TestScreenCannotSwapItsKeyAfterSeeingTheCore(t *testing.T) {
 	_, err := Core(coreSide, identity(t), "Core", func(string) (string, error) { return "", nil })
 	if !errors.Is(err, ErrCommit) {
 		t.Fatalf("tampered reveal: %v", err)
-	}
-}
-
-func TestIdentityPersists(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "id", "core.key")
-	a, err := LoadIdentity(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := LoadIdentity(p)
-	if err != nil || a.ID() != b.ID() {
-		t.Fatalf("identity changed: %v", err)
 	}
 }

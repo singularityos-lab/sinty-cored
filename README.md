@@ -27,6 +27,14 @@ the Linux framebuffer, reading keyboards and pointers from `/dev/input`.
 - **Phone.** When the device form is `headless`, the Core announces itself
   over Bluetooth LE with a presence characteristic and a write-only control
   characteristic, both encrypted.
+- **Identity.** The Core and every screen hold an Ed25519 key. It is sealed
+  in the TPM through `sintykey-tpm`, bound to the chip and not to the boot
+  measurements, so updates keep it. Without a TPM it stays in a file only
+  root can read, and moves into the TPM once one answers. A backup is the key
+  and the paired screens, encrypted with a recovery code; restoring it on a
+  new or reset Core brings back every pairing. When the TPM no longer opens
+  the key, the Core starts with a new one and keeps the old blob, which it
+  takes back if the TPM opens it again later.
 - **Power.** While a screen is showing the desktop the Core tells
   `sinty-powerd` it is streaming, and which encoder device it uses.
 
@@ -46,17 +54,20 @@ allowed to root and to the person signed in on the Core.
 | `UsbMode` | property `s` | `off`, `network` or `disk`. |
 | `Form` | property `s` | Device form reported by `sinty-powerd`. |
 | `Encoder` | property `s` | `hardware` or `software`. |
+| `Identity` | property `s` | `tpm`, `file`, or `replaced` when the sealed key was lost and a backup should be restored. |
 | `StartPairing()` | out `s` | Opens the window for two minutes, returns the route. |
 | `ConfirmPairing(code)` / `CancelPairing()` | | |
 | `RevokeScreen(id)` | | |
 | `SetUsbMode(mode)` / `SetForm(form)` | | |
+| `Backup(fd)` | in `h`, out `s` | Writes the backup to `fd`, returns the recovery code. |
+| `Restore(fd, code)` | in `hs` | |
 | `DirectNetwork()` | out `ss` | Name and passphrase of the Wi-Fi Direct network. |
 | `PairingRequest(screen)` | signal | |
 | `PairingFinished(screen, result)` | signal | `paired`, `wrong-code`, `cancelled` or `failed`. |
 | `PhoneCommand(device, command)` | signal | |
 
 Errors are `dev.sinty.Core1.Error.` followed by `NotAllowed`, `NotPairing`,
-`NoLink`, `NotSupported` or `Failed`.
+`NoLink`, `NotSupported`, `NotABackup`, `WrongCode` or `Failed`.
 
 Screens connect on TCP port 7412 and look for the Core on UDP port 7413.
 

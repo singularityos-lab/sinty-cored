@@ -77,8 +77,20 @@ type Direct interface {
 	Stop(g p2p.Group) error
 }
 
+type Vault interface {
+	Adopt(seed []byte) (bool, error)
+}
+
+const (
+	IdentityTPM      = "tpm"
+	IdentityFile     = "file"
+	IdentityReplaced = "replaced"
+)
+
 type Config struct {
 	Identity   pair.Identity
+	Kept       string
+	Vault      Vault
 	Name       string
 	Trust      Trust
 	Power      Power
@@ -113,6 +125,8 @@ type Service struct {
 	sessions map[string]*session
 	group    *p2p.Group
 	usbMode  string
+	id       pair.Identity
+	kept     string
 }
 
 func New(cfg Config) *Service {
@@ -122,7 +136,10 @@ func New(cfg Config) *Service {
 	if cfg.LAN == nil {
 		cfg.LAN = func() bool { return link.OnLAN(link.System()) }
 	}
-	return &Service{cfg: cfg, sessions: map[string]*session{}, usbMode: "off"}
+	if cfg.Kept == "" {
+		cfg.Kept = IdentityFile
+	}
+	return &Service{cfg: cfg, sessions: map[string]*session{}, usbMode: "off", id: cfg.Identity, kept: cfg.Kept}
 }
 
 type object struct{ s *Service }
@@ -139,7 +156,8 @@ func Export(conn *dbus.Conn, s *Service) error {
 	}
 	props, err := prop.Export(conn, Path, prop.Map{Iface: {
 		"Name":          {Value: s.cfg.Name, Emit: prop.EmitTrue},
-		"ID":            {Value: s.cfg.Identity.ID(), Emit: prop.EmitFalse},
+		"ID":            {Value: s.identity().ID(), Emit: prop.EmitTrue},
+		"Identity":      {Value: s.kept, Emit: prop.EmitTrue},
 		"Screens":       {Value: []Screen{}, Emit: prop.EmitTrue},
 		"Pairing":       {Value: false, Emit: prop.EmitTrue},
 		"PairingScreen": {Value: "", Emit: prop.EmitTrue},
@@ -395,7 +413,7 @@ func (s *Service) refreshScreens() {
 			ID      string
 			Name    string
 			Showing int
-		}{s.cfg.Identity.ID(), s.cfg.Name, n})
+		}{s.identity().ID(), s.cfg.Name, n})
 		s.cfg.OnPresence(data)
 	}
 }
@@ -486,7 +504,7 @@ func (s *Service) pair(rw rwc) {
 	}()
 	rw.SetDeadline(time.Now().Add(s.cfg.PairWindow + 10*time.Second))
 	screen := ""
-	peer, err := pair.Core(rw, s.cfg.Identity, s.cfg.Name, func(name string) (string, error) {
+	peer, err := pair.Core(rw, s.identity(), s.cfg.Name, func(name string) (string, error) {
 		screen = name
 		s.set("PairingScreen", name)
 		s.emit("PairingRequest", name)
@@ -525,7 +543,7 @@ func (s *Service) session(rw rwc) {
 	if err != nil {
 		return
 	}
-	conn, req, err := channel.Core(rw, s.cfg.Identity, func(id string) (string, bool) {
+	conn, req, err := channel.Core(rw, s.identity(), func(id string) (string, bool) {
 		name, ok := trusted[id]
 		return name, ok
 	})
@@ -605,7 +623,6 @@ type announce struct {
 }
 
 func (s *Service) Discovery(pc net.PacketConn, port int) error {
-	reply, _ := json.Marshal(announce{s.cfg.Name, s.cfg.Identity.ID(), port})
 	buf := make([]byte, 64)
 	for {
 		n, from, err := pc.ReadFrom(buf)
@@ -613,6 +630,7 @@ func (s *Service) Discovery(pc net.PacketConn, port int) error {
 			return err
 		}
 		if string(buf[:n]) == Probe {
+			reply, _ := json.Marshal(announce{s.cfg.Name, s.identity().ID(), port})
 			pc.WriteTo(reply, from)
 		}
 	}

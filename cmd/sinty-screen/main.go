@@ -17,10 +17,10 @@ import (
 
 	"github.com/singularityos-lab/sinty-cored/internal/channel"
 	"github.com/singularityos-lab/sinty-cored/internal/fb"
-	"github.com/singularityos-lab/sinty-cored/internal/pair"
 	"github.com/singularityos-lab/sinty-cored/internal/service"
 	"github.com/singularityos-lab/sinty-cored/internal/terminal"
 	"github.com/singularityos-lab/sinty-cored/internal/v4l2"
+	"github.com/singularityos-lab/sinty-cored/internal/vault"
 )
 
 type found struct {
@@ -117,7 +117,12 @@ func main() {
 	if *name == "" {
 		*name = hostname()
 	}
-	id, err := pair.LoadIdentity(filepath.Join(*state, "identity"))
+	store := vault.Store{Dir: *state, TPM: vault.NewHelper(filepath.Join(*state, "tpm"))}
+	id, _, err := store.Load()
+	if errors.Is(err, vault.ErrSealBroken) {
+		log.Printf("identity: %v, this screen has to be paired again", err)
+		id, _, err = store.Recover()
+	}
 	if err != nil {
 		log.Fatalf("identity: %v", err)
 	}

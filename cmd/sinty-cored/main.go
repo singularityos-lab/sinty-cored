@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -17,8 +18,8 @@ import (
 	"github.com/singularityos-lab/sinty-cored/internal/ble"
 	"github.com/singularityos-lab/sinty-cored/internal/gadget"
 	"github.com/singularityos-lab/sinty-cored/internal/p2p"
-	"github.com/singularityos-lab/sinty-cored/internal/pair"
 	"github.com/singularityos-lab/sinty-cored/internal/service"
+	"github.com/singularityos-lab/sinty-cored/internal/vault"
 )
 
 func hostname() string {
@@ -48,9 +49,28 @@ func main() {
 	if os.Getenv("DBUS_SYSTEM_BUS_ADDRESS") == "" {
 		os.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/run/dbus/system_bus_socket")
 	}
-	id, err := pair.LoadIdentity(filepath.Join(*state, "identity"))
+	store := vault.Store{Dir: *state, TPM: vault.NewHelper(filepath.Join(*state, "tpm"))}
+	if store.Reclaim() {
+		log.Printf("identity: the TPM opened the Core identity again")
+	}
+	id, sealed, err := store.Load()
+	for i := 0; i < 5 && errors.Is(err, vault.ErrSealBroken); i++ {
+		time.Sleep(2 * time.Second)
+		id, sealed, err = store.Load()
+	}
+	if errors.Is(err, vault.ErrSealBroken) {
+		log.Printf("identity: %v, starting with a new one until it is restored from a backup", err)
+		id, sealed, err = store.Recover()
+	}
 	if err != nil {
 		log.Fatalf("identity: %v", err)
+	}
+	kept := service.IdentityFile
+	switch {
+	case store.Lost():
+		kept = service.IdentityReplaced
+	case sealed:
+		kept = service.IdentityTPM
 	}
 
 	var conn *dbus.Conn
@@ -69,6 +89,8 @@ func main() {
 	desktop.RunDir = *runtime
 	cfg := service.Config{
 		Identity: id,
+		Kept:     kept,
+		Vault:    store,
 		Name:     *name,
 		Trust:    service.KeyTrust{Conn: conn},
 		Power:    service.Powerd{Conn: conn},

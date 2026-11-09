@@ -15,8 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/singularityos-lab/sinty-cored/internal/wire"
 )
@@ -48,31 +46,6 @@ func (i Identity) ID() string { return ID(i.Public()) }
 func ID(pub ed25519.PublicKey) string {
 	sum := sha256.Sum256(pub)
 	return hex.EncodeToString(sum[:16])
-}
-
-func LoadIdentity(path string) (Identity, error) {
-	seed, err := os.ReadFile(path)
-	if err == nil && len(seed) == ed25519.SeedSize {
-		return Identity{ed25519.NewKeyFromSeed(seed)}, nil
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return Identity{}, err
-	}
-	seed = make([]byte, ed25519.SeedSize)
-	if _, err := rand.Read(seed); err != nil {
-		return Identity{}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return Identity{}, err
-	}
-	tmp := path + ".new"
-	if err := os.WriteFile(tmp, seed, 0o600); err != nil {
-		return Identity{}, err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return Identity{}, err
-	}
-	return Identity{ed25519.NewKeyFromSeed(seed)}, nil
 }
 
 type Peer struct {
