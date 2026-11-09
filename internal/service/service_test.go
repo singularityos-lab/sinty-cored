@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -51,8 +52,49 @@ func (t *trust) Remove(id string) error    { t.mu.Lock(); delete(t.m, id); t.mu.
 type power struct {
 	mu        sync.Mutex
 	streaming []bool
+	encoders  []string
 	form      string
 }
+
+func (p *power) SetEncoder(d string) error {
+	p.mu.Lock()
+	p.encoders = append(p.encoders, d)
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *power) encoderLog() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string{}, p.encoders...)
+}
+
+type codecs struct{ made int }
+
+func (c *codecs) Available() bool { return true }
+func (c *codecs) Pick(accept []string) (stream.Hardware, string) {
+	if !slices.Contains(accept, "TEST") {
+		return nil, ""
+	}
+	return func(w, h int) (stream.Coder, error) { c.made++; return rawCoder{w, h}, nil }, "/dev/video9"
+}
+
+type rawCoder struct{ w, h int }
+
+func (r rawCoder) Encode(pix []byte, stride int) ([]byte, error) {
+	out := make([]byte, 0, r.w*r.h*4)
+	for y := 0; y < r.h; y++ {
+		out = append(out, pix[y*stride:y*stride+r.w*4]...)
+	}
+	return out, nil
+}
+func (r rawCoder) Format() uint32 { return 0x54534554 }
+func (r rawCoder) Close() error   { return nil }
+
+type passDecoder struct{}
+
+func (passDecoder) Decode(b []byte) ([]byte, error) { return b, nil }
+func (passDecoder) Close() error                    { return nil }
 
 func (p *power) SetStreaming(on bool) error {
 	p.mu.Lock()
@@ -136,6 +178,7 @@ type rig struct {
 	addr   string
 	tr     *trust
 	pw     *power
+	cd     *codecs
 	dk     *desktop
 	sigs   chan *dbus.Signal
 }
@@ -143,10 +186,10 @@ type rig struct {
 func setup(t *testing.T, owner uint32) *rig {
 	bus := bustest.Start(t)
 	server := bustest.Connect(t, bus)
-	r := &rig{t: t, tr: &trust{m: map[string]string{}}, pw: &power{form: "laptop"}}
+	r := &rig{t: t, tr: &trust{m: map[string]string{}}, pw: &power{form: "laptop"}, cd: &codecs{}}
 	r.dk = &desktop{owner: owner, sink: &sink{}, layout: make(chan string, 4)}
 	r.svc = New(Config{
-		Identity: identity(t), Name: "Desk Core", Trust: r.tr, Power: r.pw, Desktop: r.dk,
+		Identity: identity(t), Name: "Desk Core", Trust: r.tr, Power: r.pw, Desktop: r.dk, Codecs: r.cd,
 		LAN: func() bool { return true }, PairWindow: 5 * time.Second,
 	})
 	if err := Export(server, r.svc); err != nil {
@@ -213,7 +256,13 @@ func eventually(t *testing.T, what string, ok func() bool) {
 func TestPairStreamControlAndRevoke(t *testing.T) {
 	r := setup(t, uint32(os.Getuid()))
 	disp := &display{}
-	term := &terminal.Terminal{Identity: identity(t), Name: "Living Room TV", Layout: "it", State: t.TempDir(), Display: disp, W: 640, H: 480}
+	term := &terminal.Terminal{Identity: identity(t), Name: "Living Room TV", Layout: "it", State: t.TempDir(), Display: disp, W: 640, H: 480,
+		Codecs:   []string{"TEST"},
+		Decoders: func(uint32, int, int) (terminal.Decoder, error) { return passDecoder{}, nil }}
+	var kind string
+	if err := r.obj.StoreProperty(Iface+".Encoder", &kind); err != nil || kind != "hardware" {
+		t.Fatalf("encoder property %q %v", kind, err)
+	}
 
 	c := r.dial()
 	if _, err := term.Pair(c); err == nil {
@@ -274,6 +323,9 @@ func TestPairStreamControlAndRevoke(t *testing.T) {
 	if st := r.pw.states(); len(st) != 1 || !st[0] {
 		t.Fatalf("power while streaming %v", st)
 	}
+	if e := r.pw.encoderLog(); len(e) != 1 || e[0] != "/dev/video9" || r.cd.made != 1 {
+		t.Fatalf("hardware encoder %v made %d", e, r.cd.made)
+	}
 
 	if err := r.obj.Call(Iface+".RevokeScreen", 0, term.Identity.ID()).Err; err != nil {
 		t.Fatal(err)
@@ -284,6 +336,7 @@ func TestPairStreamControlAndRevoke(t *testing.T) {
 		t.Fatal("session kept running after the screen was removed")
 	}
 	eventually(t, "streaming off", func() bool { st := r.pw.states(); return len(st) == 2 && !st[1] })
+	eventually(t, "encoder released", func() bool { e := r.pw.encoderLog(); return len(e) == 2 && e[1] == "" })
 	if s := r.screens(); len(s) != 0 {
 		t.Fatalf("screens after revoke %+v", s)
 	}

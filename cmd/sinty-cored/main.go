@@ -38,6 +38,7 @@ func main() {
 	noBLE := flag.Bool("no-ble", false, "do not announce the Core over Bluetooth")
 	diskSize := flag.Int64("disk-size", 32<<30, "size of the Core disk in bytes")
 	runtime := flag.String("runtime", "/run/user", "directory holding the runtime directory of each user")
+	codecDir := flag.String("codecs", "/dev", "directory with the video codec devices, none when empty")
 	flag.Parse()
 	log.SetFlags(0)
 	log.SetPrefix("sinty-cored: ")
@@ -73,6 +74,11 @@ func main() {
 		Power:    service.Powerd{Conn: conn},
 		Desktop:  desktop,
 		Direct:   p2p.New(),
+	}
+	if *codecDir != "" {
+		if v := service.NewV4L2(*codecDir); v.Available() {
+			cfg.Codecs = v
+		}
 	}
 	g := gadget.New()
 	if _, err := g.Port(); err == nil {

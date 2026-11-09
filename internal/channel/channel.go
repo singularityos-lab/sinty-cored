@@ -48,6 +48,7 @@ type open struct {
 	Ephemeral []byte
 	Nonce     []byte
 	Layout    string
+	Codecs    []string
 }
 
 type accept struct {
@@ -106,7 +107,7 @@ func sig(role string, t []byte) []byte {
 	return append([]byte("sinty-core session "+role+" "), t...)
 }
 
-func Screen(rw io.ReadWriteCloser, me pair.Identity, core ed25519.PublicKey, layout string) (*Conn, error) {
+func Screen(rw io.ReadWriteCloser, me pair.Identity, core ed25519.PublicKey, layout string, codecs []string) (*Conn, error) {
 	eph, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -116,7 +117,7 @@ func Screen(rw io.ReadWriteCloser, me pair.Identity, core ed25519.PublicKey, lay
 		return nil, err
 	}
 	ephPub := eph.PublicKey().Bytes()
-	if err := wire.WriteJSON(rw, msgOpen, open{me.Public(), ephPub, ns, layout}); err != nil {
+	if err := wire.WriteJSON(rw, msgOpen, open{me.Public(), ephPub, ns, layout, codecs}); err != nil {
 		return nil, err
 	}
 	kind, data, err := wire.Read(rw)
@@ -155,6 +156,7 @@ func Screen(rw io.ReadWriteCloser, me pair.Identity, core ed25519.PublicKey, lay
 type Request struct {
 	Peer   pair.Peer
 	Layout string
+	Codecs []string
 }
 
 func Core(rw io.ReadWriteCloser, me pair.Identity, trusted func(id string) (string, bool)) (*Conn, Request, error) {
@@ -201,7 +203,7 @@ func Core(rw io.ReadWriteCloser, me pair.Identity, trusted func(id string) (stri
 	}
 	peer := pair.Peer{ID: id, Name: name, Public: ed25519.PublicKey(o.Identity)}
 	c := &Conn{rw: rw, peer: peer}
-	return c, Request{peer, o.Layout}, keys(c, shared, t, false)
+	return c, Request{peer, o.Layout, o.Codecs}, keys(c, shared, t, false)
 }
 
 func nonceFor(n uint64) []byte {

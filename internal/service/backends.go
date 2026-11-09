@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"syscall"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/singularityos-lab/sinty-cored/internal/gadget"
 	"github.com/singularityos-lab/sinty-cored/internal/stream"
+	"github.com/singularityos-lab/sinty-cored/internal/v4l2"
 	"github.com/singularityos-lab/sinty-cored/internal/wl"
 )
 
@@ -59,6 +61,31 @@ func (p Powerd) obj() dbus.BusObject {
 
 func (p Powerd) SetStreaming(on bool) error {
 	return p.obj().Call("dev.sinty.Power1.SetStreaming", 0, on).Err
+}
+
+func (p Powerd) SetEncoder(device string) error {
+	return p.obj().Call("dev.sinty.Power1.SetEncoder", 0, device).Err
+}
+
+type V4L2 struct {
+	Dir  string
+	list []v4l2.Codec
+}
+
+func NewV4L2(dir string) *V4L2 {
+	return &V4L2{Dir: dir, list: v4l2.Find(dir, true)}
+}
+
+func (v *V4L2) Available() bool { return len(v.list) > 0 }
+
+func (v *V4L2) Pick(accept []string) (stream.Hardware, string) {
+	for _, c := range v.list {
+		if !slices.Contains(accept, v4l2.Name(c.Format)) {
+			continue
+		}
+		return func(w, h int) (stream.Coder, error) { return v4l2.NewEncoder(c, w, h) }, c.Path
+	}
+	return nil, ""
 }
 
 func (p Powerd) SetForm(form string) error {

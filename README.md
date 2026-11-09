@@ -16,9 +16,11 @@ the Linux framebuffer, reading keyboards and pointers from `/dev/input`.
   identities, then runs AES-256-GCM in each direction. Removing a screen in
   Settings, or revoking it in `sinty-keyd`, ends its session at once.
 - **Picture.** The Core captures the signed-in desktop with
-  `wlr-screencopy`, waits for damage, and sends only the 64x64 tiles that
-  changed, compressed in software. Input arrives through the virtual pointer
-  and virtual keyboard protocols, with the screen's keyboard layout.
+  `wlr-screencopy` and waits for damage. When the Core has a V4L2
+  memory-to-memory encoder for a format the screen can decode (H.264, HEVC,
+  VP8), frames go through it; otherwise the Core sends only the 64x64 tiles
+  that changed, compressed in software. Input arrives through the virtual
+  pointer and virtual keyboard protocols, with the screen's keyboard layout.
 - **Links.** A screen finds the Core on the local network over UDP. Without a
   network the Core opens a Wi-Fi Direct group through `wpa_supplicant`. With a
   USB-C cable it shows up as a network adapter, or as a disk.
@@ -26,7 +28,7 @@ the Linux framebuffer, reading keyboards and pointers from `/dev/input`.
   over Bluetooth LE with a presence characteristic and a write-only control
   characteristic, both encrypted.
 - **Power.** While a screen is showing the desktop the Core tells
-  `sinty-powerd` it is streaming.
+  `sinty-powerd` it is streaming, and which encoder device it uses.
 
 ## D-Bus
 
@@ -43,7 +45,7 @@ allowed to root and to the person signed in on the Core.
 | `Phone` | property `s` | Last phone that sent a command. |
 | `UsbMode` | property `s` | `off`, `network` or `disk`. |
 | `Form` | property `s` | Device form reported by `sinty-powerd`. |
-| `Encoder` | property `s` | |
+| `Encoder` | property `s` | `hardware` or `software`. |
 | `StartPairing()` | out `s` | Opens the window for two minutes, returns the route. |
 | `ConfirmPairing(code)` / `CancelPairing()` | | |
 | `RevokeScreen(id)` | | |

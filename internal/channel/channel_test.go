@@ -28,7 +28,7 @@ func openPair(t *testing.T, screenRW, coreRW net.Conn, screen, core pair.Identit
 	}
 	ch := make(chan res, 1)
 	go func() {
-		c, err := Screen(screenRW, screen, coreSeenByScreen, "it")
+		c, err := Screen(screenRW, screen, coreSeenByScreen, "it", []string{"H264", "FWHT"})
 		if err != nil {
 			screenRW.Close()
 		}
@@ -37,8 +37,8 @@ func openPair(t *testing.T, screenRW, coreRW net.Conn, screen, core pair.Identit
 	c, req, err := Core(coreRW, core, trusted)
 	if err != nil {
 		coreRW.Close()
-	} else if req.Layout != "it" {
-		t.Errorf("layout %q", req.Layout)
+	} else if req.Layout != "it" || len(req.Codecs) != 2 || req.Codecs[1] != "FWHT" {
+		t.Errorf("layout %q codecs %q", req.Layout, req.Codecs)
 	}
 	s := <-ch
 	return s.c, c, s.err, err

@@ -30,7 +30,6 @@ const (
 	ScreenPort    = 7412
 	DiscoveryPort = 7413
 	Probe         = "sinty-core?"
-	Encoder       = "software"
 )
 
 var (
@@ -52,6 +51,7 @@ type Trust interface {
 
 type Power interface {
 	SetStreaming(on bool) error
+	SetEncoder(device string) error
 	SetForm(form string) error
 	Form() string
 }
@@ -64,6 +64,11 @@ type Desktop interface {
 type USB interface {
 	Apply(mode string) error
 	Cable() bool
+}
+
+type Codecs interface {
+	Available() bool
+	Pick(accept []string) (stream.Hardware, string)
 }
 
 type Direct interface {
@@ -80,6 +85,7 @@ type Config struct {
 	Desktop    Desktop
 	USB        USB
 	Direct     Direct
+	Codecs     Codecs
 	LAN        func() bool
 	PairWindow time.Duration
 	OnPresence func([]byte)
@@ -141,7 +147,7 @@ func Export(conn *dbus.Conn, s *Service) error {
 		"Direct":        {Value: "", Emit: prop.EmitTrue},
 		"Phone":         {Value: "", Emit: prop.EmitTrue},
 		"UsbMode":       {Value: "off", Emit: prop.EmitTrue},
-		"Encoder":       {Value: Encoder, Emit: prop.EmitFalse},
+		"Encoder":       {Value: s.encoderKind(), Emit: prop.EmitFalse},
 		"Form":          {Value: form, Emit: prop.EmitTrue},
 	}})
 	if err != nil {
@@ -537,6 +543,11 @@ func (s *Service) session(rw rwc) {
 		return
 	}
 	defer done()
+	var hw stream.Hardware
+	device := ""
+	if s.cfg.Codecs != nil {
+		hw, device = s.cfg.Codecs.Pick(req.Codecs)
+	}
 	id := req.Peer.ID
 	sess := &session{conn: conn, stop: make(chan struct{})}
 	s.mu.Lock()
@@ -551,8 +562,13 @@ func (s *Service) session(rw rwc) {
 			log.Printf("streaming state not set: %v", err)
 		}
 	}
+	if device != "" && s.cfg.Power != nil {
+		if err := s.cfg.Power.SetEncoder(device); err != nil {
+			log.Printf("encoder not reported: %v", err)
+		}
+	}
 	s.refreshScreens()
-	stream.Serve(conn, src, sink, sess.stop)
+	stream.Serve(conn, src, sink, hw, sess.stop)
 	s.mu.Lock()
 	if s.sessions[id] == sess {
 		delete(s.sessions, id)
@@ -566,8 +582,20 @@ func (s *Service) session(rw rwc) {
 		if err := s.cfg.Power.SetStreaming(false); err != nil {
 			log.Printf("streaming state not cleared: %v", err)
 		}
+		if s.cfg.Codecs != nil && s.cfg.Codecs.Available() {
+			if err := s.cfg.Power.SetEncoder(""); err != nil {
+				log.Printf("encoder not cleared: %v", err)
+			}
+		}
 	}
 	s.refreshScreens()
+}
+
+func (s *Service) encoderKind() string {
+	if s.cfg.Codecs != nil && s.cfg.Codecs.Available() {
+		return "hardware"
+	}
+	return "software"
 }
 
 type announce struct {

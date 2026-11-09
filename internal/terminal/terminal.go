@@ -24,6 +24,11 @@ type Display interface {
 	Draw(pix []byte, w, h int)
 }
 
+type Decoder interface {
+	Decode(data []byte) ([]byte, error)
+	Close() error
+}
+
 type Terminal struct {
 	Identity pair.Identity
 	Name     string
@@ -32,6 +37,8 @@ type Terminal struct {
 	Display  Display
 	W, H     int
 	OnFrame  func(w, h int)
+	Codecs   []string
+	Decoders func(format uint32, w, h int) (Decoder, error)
 }
 
 type paired struct {
@@ -108,7 +115,7 @@ func (t *Terminal) Open(rw io.ReadWriteCloser) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := channel.Screen(rw, t.Identity, core.Public, t.Layout)
+	c, err := channel.Screen(rw, t.Identity, core.Public, t.Layout, t.Codecs)
 	if err != nil {
 		if errors.Is(err, channel.ErrUntrusted) {
 			t.message("This screen was removed from", core.Name, "Pair it again from Settings on the Core")
@@ -120,12 +127,50 @@ func (t *Terminal) Open(rw io.ReadWriteCloser) (*Session, error) {
 
 func (t *Terminal) Show(s *Session) error {
 	var dec tiles.Decoder
+	var hw Decoder
+	var hwFormat uint32
+	var hwW, hwH int
+	defer func() {
+		if hw != nil {
+			hw.Close()
+		}
+	}()
 	for {
 		kind, data, err := s.c.Recv()
 		if err != nil {
 			return err
 		}
 		switch kind {
+		case stream.Coded:
+			format, w, h, payload, ok := stream.ParseCoded(data)
+			if !ok || t.Decoders == nil {
+				return tiles.ErrBadFrame
+			}
+			if hw == nil || format != hwFormat || w != hwW || h != hwH {
+				if hw != nil {
+					hw.Close()
+				}
+				hw, err = t.Decoders(format, w, h)
+				if err != nil {
+					t.Codecs = nil
+					return err
+				}
+				hwFormat, hwW, hwH = format, w, h
+			}
+			pix, err := hw.Decode(payload)
+			if err != nil {
+				t.Codecs = nil
+				return err
+			}
+			if pix == nil {
+				continue
+			}
+			if t.Display != nil {
+				t.Display.Draw(pix, w, h)
+			}
+			if t.OnFrame != nil {
+				t.OnFrame(w, h)
+			}
 		case stream.Video:
 			if _, err := dec.Decode(data); err != nil {
 				return err
