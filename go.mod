@@ -1,0 +1,5 @@
+module github.com/singularityos-lab/sinty-cored
+
+go 1.25
+
+require github.com/godbus/dbus/v5 v5.2.2

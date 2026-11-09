@@ -1,0 +1,15 @@
+[Unit]
+Description=Sinty Core service
+Documentation=https://github.com/singularityos-lab/sinty-cored
+Wants=dbus.service sinty-keyd.service
+After=dbus.service bluetooth.service wpa_supplicant.service
+
+[Service]
+Type=dbus
+BusName=dev.sinty.Core1
+ExecStart=/usr/libexec/sinty-cored
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target

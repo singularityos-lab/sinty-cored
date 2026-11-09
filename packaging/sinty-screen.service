@@ -1,0 +1,13 @@
+[Unit]
+Description=Sinty Core screen
+Documentation=https://github.com/singularityos-lab/sinty-cored
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/sinty-screen
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
