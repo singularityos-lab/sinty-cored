@@ -22,8 +22,9 @@ the Linux framebuffer, reading keyboards and pointers from `/dev/input`.
 - **Links.** A screen finds the Core on the local network over UDP. Without a
   network the Core opens a Wi-Fi Direct group through `wpa_supplicant`. With a
   USB-C cable it shows up as a network adapter, or as a disk.
-- **Phone.** The Core announces itself over Bluetooth LE with a presence
-  characteristic and a write-only control characteristic, both encrypted.
+- **Phone.** When the device form is `headless`, the Core announces itself
+  over Bluetooth LE with a presence characteristic and a write-only control
+  characteristic, both encrypted.
 - **Power.** While a screen is showing the desktop the Core tells
   `sinty-powerd` it is streaming.
 

@@ -80,7 +80,7 @@ func main() {
 	}
 	var periph *ble.Peripheral
 	var svc *service.Service
-	if !*noBLE {
+	if !*noBLE && cfg.Power.Form() == "headless" {
 		periph = ble.New(conn, *name, func(device string, value []byte) { svc.Phone(device, string(value)) })
 		cfg.OnPresence = func(v []byte) { periph.SetPresence(v) }
 	}
