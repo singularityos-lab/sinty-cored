@@ -111,6 +111,7 @@ func main() {
 	repair := flag.Bool("pair", false, "forget the paired Core and pair again")
 	size := flag.String("size", "", "draw into a plain file of this size, as WIDTHxHEIGHT")
 	codecDir := flag.String("codecs", "/dev", "directory with the video codec devices, none when empty")
+	codecHelper := flag.String("codec-helper", v4l2.DefaultHelper, "helper that reaches codecs behind a vendor V4L2 library, none when empty")
 	flag.Parse()
 	log.SetFlags(0)
 	log.SetPrefix("sinty-screen: ")
@@ -133,7 +134,7 @@ func main() {
 	defer disp.Close()
 	term := &terminal.Terminal{Identity: id, Name: *name, Layout: *layout, State: *state, Display: disp, W: disp.W, H: disp.H}
 	if *codecDir != "" {
-		decoders := v4l2.Find(*codecDir, false)
+		decoders := v4l2.FindAll(*codecDir, *codecHelper, false)
 		for _, c := range decoders {
 			term.Codecs = append(term.Codecs, v4l2.Name(c.Format))
 		}

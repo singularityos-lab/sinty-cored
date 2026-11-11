@@ -19,6 +19,7 @@ import (
 	"github.com/singularityos-lab/sinty-cored/internal/gadget"
 	"github.com/singularityos-lab/sinty-cored/internal/p2p"
 	"github.com/singularityos-lab/sinty-cored/internal/service"
+	"github.com/singularityos-lab/sinty-cored/internal/v4l2"
 	"github.com/singularityos-lab/sinty-cored/internal/vault"
 )
 
@@ -40,6 +41,7 @@ func main() {
 	diskSize := flag.Int64("disk-size", 32<<30, "size of the Core disk in bytes")
 	runtime := flag.String("runtime", "/run/user", "directory holding the runtime directory of each user")
 	codecDir := flag.String("codecs", "/dev", "directory with the video codec devices, none when empty")
+	codecHelper := flag.String("codec-helper", v4l2.DefaultHelper, "helper that reaches codecs behind a vendor V4L2 library, none when empty")
 	flag.Parse()
 	log.SetFlags(0)
 	log.SetPrefix("sinty-cored: ")
@@ -98,7 +100,7 @@ func main() {
 		Direct:   p2p.New(),
 	}
 	if *codecDir != "" {
-		if v := service.NewV4L2(*codecDir); v.Available() {
+		if v := service.NewV4L2(*codecDir, *codecHelper); v.Available() {
 			cfg.Codecs = v
 		}
 	}

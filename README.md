@@ -19,7 +19,10 @@ the Linux framebuffer, reading keyboards and pointers from `/dev/input`.
   `wlr-screencopy` and waits for damage. When the Core has a V4L2
   memory-to-memory encoder for a format the screen can decode (H.264, HEVC,
   VP8), frames go through it; otherwise the Core sends only the 64x64 tiles
-  that changed, compressed in software. Input arrives through the virtual
+  that changed, compressed in software. Codecs that sit behind a vendor V4L2
+  library, such as the Jetson Orin encoder behind `libnvv4l2`, are reached
+  through `sinty-v4l2-proxy`, a small helper that loads the library and
+  carries the same V4L2 calls over a pipe. Input arrives through the virtual
   pointer and virtual keyboard protocols, with the screen's keyboard layout.
 - **Links.** A screen finds the Core on the local network over UDP. Without a
   network the Core opens a Wi-Fi Direct group through `wpa_supplicant`. With a

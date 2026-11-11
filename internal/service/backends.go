@@ -72,8 +72,8 @@ type V4L2 struct {
 	list []v4l2.Codec
 }
 
-func NewV4L2(dir string) *V4L2 {
-	return &V4L2{Dir: dir, list: v4l2.Find(dir, true)}
+func NewV4L2(dir, helper string) *V4L2 {
+	return &V4L2{Dir: dir, list: v4l2.FindAll(dir, helper, true)}
 }
 
 func (v *V4L2) Available() bool { return len(v.list) > 0 }

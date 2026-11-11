@@ -3,6 +3,7 @@ package v4l2
 import (
 	"math"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -58,12 +59,18 @@ func TestFourcc(t *testing.T) {
 	}
 }
 
-func devices(t *testing.T) (Codec, Codec) {
-	dir := os.Getenv("SINTY_V4L2_DIR")
-	if dir == "" {
-		dir = "/dev"
+func codecDir() string {
+	if dir := os.Getenv("SINTY_V4L2_DIR"); dir != "" {
+		return dir
 	}
-	encs, decs := Find(dir, true), Find(dir, false)
+	return "/dev"
+}
+
+func devices(t *testing.T) (Codec, Codec) {
+	return pair(t, Find(codecDir(), true), Find(codecDir(), false))
+}
+
+func pair(t *testing.T, encs, decs []Codec) (Codec, Codec) {
 	for _, e := range encs {
 		for _, d := range decs {
 			if e.Format == d.Format {
@@ -133,4 +140,30 @@ func TestHardwareRoundTripNV12(t *testing.T) {
 	}
 	defer enc.Close()
 	roundTrip(t, enc, dc, w, h)
+}
+
+func TestProxyRoundTrip(t *testing.T) {
+	helper := os.Getenv("SINTY_V4L2_PROXY")
+	if helper == "" {
+		t.Skip("no codec helper")
+	}
+	paths, _ := filepath.Glob(filepath.Join(codecDir(), "video*"))
+	ec, dc := pair(t, FindProxy(helper, paths, true), FindProxy(helper, paths, false))
+	if ec.proxy == "" || dc.proxy == "" {
+		t.Fatal("codecs not reached through the helper")
+	}
+	t.Logf("through %s: encoder %s %s, decoder %s, multi-planar %v", helper, ec.Path, Name(ec.Format), dc.Path, ec.mplane)
+	w, h := 640, 360
+	enc, err := NewEncoder(ec, w, h)
+	if err != nil {
+		t.Fatalf("encoder: %v", err)
+	}
+	defer enc.Close()
+	roundTrip(t, enc, dc, w, h)
+}
+
+func TestProxyMissingHelper(t *testing.T) {
+	if got := FindProxy("/nonexistent/helper", []string{"/dev/null"}, true); got != nil {
+		t.Fatalf("found codecs without a helper: %v", got)
+	}
 }

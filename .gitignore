@@ -2,3 +2,4 @@
 /sinty-screen
 *.test
 *.out
+/sinty-v4l2-proxy

@@ -3,8 +3,8 @@ package v4l2
 import (
 	"encoding/binary"
 	"errors"
+	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"unsafe"
@@ -82,6 +82,7 @@ type Codec struct {
 	Format uint32
 	raw    []uint32
 	mplane bool
+	proxy  string
 }
 
 func ioctl(fd int, req uintptr, arg unsafe.Pointer) error {
@@ -99,13 +100,13 @@ func cstr(b []byte) string {
 	return string(b)
 }
 
-func formats(fd int, typ uint32) []uint32 {
+func formats(be backend, typ uint32) []uint32 {
 	var out []uint32
 	for i := uint32(0); i < 64; i++ {
-		var d [64]byte
+		d := make([]byte, 64)
 		binary.LittleEndian.PutUint32(d[0:], i)
 		binary.LittleEndian.PutUint32(d[4:], typ)
-		if ioctl(fd, vidiocEnumFmt, unsafe.Pointer(&d)) != nil {
+		if be.ioctl(vidiocEnumFmt, d, nil) != nil {
 			break
 		}
 		out = append(out, binary.LittleEndian.Uint32(d[44:]))
@@ -113,14 +114,9 @@ func formats(fd int, typ uint32) []uint32 {
 	return out
 }
 
-func probe(path string) (card string, mplane bool, ok bool) {
-	fd, err := unix.Open(path, unix.O_RDWR|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return "", false, false
-	}
-	defer unix.Close(fd)
-	var c [104]byte
-	if ioctl(fd, vidiocQuerycap, unsafe.Pointer(&c)) != nil {
+func probe(be backend) (card string, mplane bool, ok bool) {
+	c := make([]byte, 104)
+	if be.ioctl(vidiocQuerycap, c, nil) != nil {
 		return "", false, false
 	}
 	caps := binary.LittleEndian.Uint32(c[84:])
@@ -143,43 +139,80 @@ func Find(dir string, encoder bool) []Codec {
 	})
 	var out []Codec
 	for _, p := range paths {
-		card, mplane, ok := probe(p)
-		if !ok {
-			continue
-		}
-		fd, err := unix.Open(p, unix.O_RDWR|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-		if err != nil {
-			continue
-		}
-		capT, outT := uint32(typeCapture), uint32(typeOutput)
-		if mplane {
-			capT, outT = typeCaptureMplane, typeOutputMplane
-		}
-		codedT, rawT := outT, capT
-		if encoder {
-			codedT, rawT = capT, outT
-		}
-		coded, raw := formats(fd, codedT), formats(fd, rawT)
-		unix.Close(fd)
-		usable := slices.Contains(raw, XR24) || slices.Contains(raw, NV12) || slices.Contains(raw, NV12M)
-		if !usable {
-			continue
-		}
-		for _, f := range Coded {
-			if slices.Contains(coded, f) && !slices.Contains(raw, f) {
-				out = append(out, Codec{Path: p, Card: card, Format: f, raw: raw, mplane: mplane})
-			}
-		}
+		out = append(out, codecsAt(Codec{Path: p}, encoder)...)
 	}
+	return sorted(out)
+}
+
+const DefaultHelper = "/usr/libexec/sinty-v4l2-proxy"
+
+var ProxyNodes = []string{"/dev/v4l2-nvenc", "/dev/v4l2-nvdec"}
+
+func FindAll(dir, helper string, encoder bool) []Codec {
+	out := Find(dir, encoder)
+	if helper != "" {
+		out = append(out, FindProxy(helper, ProxyNodes, encoder)...)
+	}
+	return out
+}
+
+func FindProxy(helper string, paths []string, encoder bool) []Codec {
+	if _, err := os.Stat(helper); err != nil {
+		return nil
+	}
+	var out []Codec
+	for _, p := range paths {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		out = append(out, codecsAt(Codec{Path: p, proxy: helper}, encoder)...)
+	}
+	return sorted(out)
+}
+
+func sorted(out []Codec) []Codec {
 	slices.SortStableFunc(out, func(a, b Codec) int {
 		return slices.Index(Coded, a.Format) - slices.Index(Coded, b.Format)
 	})
 	return out
 }
 
+func codecsAt(c Codec, encoder bool) []Codec {
+	be, err := c.open()
+	if err != nil {
+		return nil
+	}
+	defer be.close()
+	card, mplane, ok := probe(be)
+	if !ok {
+		return nil
+	}
+	capT, outT := uint32(typeCapture), uint32(typeOutput)
+	if mplane {
+		capT, outT = typeCaptureMplane, typeOutputMplane
+	}
+	codedT, rawT := outT, capT
+	if encoder {
+		codedT, rawT = capT, outT
+	}
+	coded, raw := formats(be, codedT), formats(be, rawT)
+	usable := slices.Contains(raw, XR24) || slices.Contains(raw, NV12) || slices.Contains(raw, NV12M)
+	if !usable {
+		return nil
+	}
+	var out []Codec
+	for _, f := range Coded {
+		if slices.Contains(coded, f) && !slices.Contains(raw, f) {
+			out = append(out, Codec{Path: c.Path, Card: card, Format: f, raw: raw, mplane: mplane, proxy: c.proxy})
+		}
+	}
+	return out
+}
+
 type buffer struct {
-	planes [][]byte
-	queued bool
+	planes  [][]byte
+	offsets []uint32
+	queued  bool
 }
 
 type queue struct {
@@ -199,18 +232,18 @@ type pixFormat struct {
 }
 
 type device struct {
-	fd     int
+	be     backend
 	mplane bool
 	out    queue
 	cap    queue
 }
 
 func open(c Codec) (*device, error) {
-	fd, err := unix.Open(c.Path, unix.O_RDWR|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	be, err := c.open()
 	if err != nil {
 		return nil, err
 	}
-	d := &device{fd: fd, mplane: c.mplane}
+	d := &device{be: be, mplane: c.mplane}
 	d.cap.typ, d.out.typ = typeCapture, typeOutput
 	if c.mplane {
 		d.cap.typ, d.out.typ = typeCaptureMplane, typeOutputMplane
@@ -219,7 +252,7 @@ func open(c Codec) (*device, error) {
 }
 
 func (d *device) setFormat(typ uint32, p pixFormat, get bool) (pixFormat, error) {
-	var f [formatSize]byte
+	f := make([]byte, formatSize)
 	binary.LittleEndian.PutUint32(f[0:], typ)
 	req := uintptr(vidiocSFmt)
 	if get {
@@ -238,7 +271,7 @@ func (d *device) setFormat(typ uint32, p pixFormat, get bool) (pixFormat, error)
 		binary.LittleEndian.PutUint32(f[20:], fieldNone)
 		binary.LittleEndian.PutUint32(f[28:], uint32(p.Size[0]))
 	}
-	if err := ioctl(d.fd, req, unsafe.Pointer(&f)); err != nil {
+	if err := d.be.ioctl(req, f, nil); err != nil {
 		return pixFormat{}, err
 	}
 	var r pixFormat
@@ -261,19 +294,19 @@ func (d *device) setFormat(typ uint32, p pixFormat, get bool) (pixFormat, error)
 }
 
 func (d *device) crop(w, h int) {
-	var sel [64]byte
+	sel := make([]byte, 64)
 	binary.LittleEndian.PutUint32(sel[0:], typeOutput)
 	binary.LittleEndian.PutUint32(sel[20:], uint32(w))
 	binary.LittleEndian.PutUint32(sel[24:], uint32(h))
-	ioctl(d.fd, vidiocSSelection, unsafe.Pointer(&sel))
+	d.be.ioctl(vidiocSSelection, sel, nil)
 }
 
 func (d *device) request(q *queue, count int) error {
-	var r [20]byte
+	r := make([]byte, 20)
 	binary.LittleEndian.PutUint32(r[0:], uint32(count))
 	binary.LittleEndian.PutUint32(r[4:], q.typ)
 	binary.LittleEndian.PutUint32(r[8:], memoryMmap)
-	if err := ioctl(d.fd, vidiocReqbufs, unsafe.Pointer(&r)); err != nil {
+	if err := d.be.ioctl(vidiocReqbufs, r, nil); err != nil {
 		return err
 	}
 	n := int(binary.LittleEndian.Uint32(r[0:]))
@@ -284,16 +317,17 @@ func (d *device) request(q *queue, count int) error {
 	q.nplanes = max(q.pix.Planes, 1)
 	for i := range q.bufs {
 		b, planes := d.newBuf(q, i)
-		if err := ioctl(d.fd, vidiocQuerybuf, unsafe.Pointer(&b[0])); err != nil {
+		if err := d.be.ioctl(vidiocQuerybuf, b, planes); err != nil {
 			return err
 		}
 		for p := 0; p < q.nplanes; p++ {
 			length, offset := bufPlane(b, planes, p, d.mplane)
-			mem, err := unix.Mmap(d.fd, int64(offset), int(length), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+			mem, err := d.be.mmap(offset, length)
 			if err != nil {
 				return err
 			}
 			q.bufs[i].planes = append(q.bufs[i].planes, mem)
+			q.bufs[i].offsets = append(q.bufs[i].offsets, offset)
 		}
 	}
 	return nil
@@ -335,8 +369,7 @@ func (d *device) queueBuf(q *queue, index int, used []int) error {
 	} else if len(used) > 0 {
 		binary.LittleEndian.PutUint32(b[8:], uint32(used[0]))
 	}
-	err := ioctl(d.fd, vidiocQbuf, unsafe.Pointer(&b[0]))
-	runtime.KeepAlive(planes)
+	err := d.be.ioctl(vidiocQbuf, b, planes)
 	if err != nil {
 		return err
 	}
@@ -346,8 +379,7 @@ func (d *device) queueBuf(q *queue, index int, used []int) error {
 
 func (d *device) dequeue(q *queue) (int, []int, error) {
 	b, planes := d.newBuf(q, 0)
-	err := ioctl(d.fd, vidiocDqbuf, unsafe.Pointer(&b[0]))
-	runtime.KeepAlive(planes)
+	err := d.be.ioctl(vidiocDqbuf, b, planes)
 	if err != nil {
 		return -1, nil, err
 	}
@@ -368,12 +400,12 @@ func (d *device) dequeue(q *queue) (int, []int, error) {
 }
 
 func (d *device) stream(q *queue, on bool) error {
-	t := int32(q.typ)
+	t := binary.LittleEndian.AppendUint32(nil, q.typ)
 	req := uintptr(vidiocStreamoff)
 	if on {
 		req = vidiocStreamon
 	}
-	if err := ioctl(d.fd, req, unsafe.Pointer(&t)); err != nil {
+	if err := d.be.ioctl(req, t, nil); err != nil {
 		return err
 	}
 	q.on = on
@@ -381,12 +413,7 @@ func (d *device) stream(q *queue, on bool) error {
 }
 
 func (d *device) wait(events int16, ms int) int16 {
-	fds := []unix.PollFd{{Fd: int32(d.fd), Events: events}}
-	n, err := unix.Poll(fds, ms)
-	if err != nil || n == 0 {
-		return 0
-	}
-	return fds[0].Revents
+	return d.be.poll(events, ms)
 }
 
 func (d *device) free(q *queue) int {
@@ -422,14 +449,18 @@ func (d *device) close() error {
 		d.stream(&d.cap, false)
 	}
 	for _, q := range []*queue{&d.out, &d.cap} {
-		for _, b := range q.bufs {
-			for _, p := range b.planes {
-				unix.Munmap(p)
-			}
-		}
-		q.bufs = nil
+		d.unmap(q)
 	}
-	return unix.Close(d.fd)
+	return d.be.close()
+}
+
+func (d *device) unmap(q *queue) {
+	for _, b := range q.bufs {
+		for i, p := range b.planes {
+			d.be.munmap(p, b.offsets[i])
+		}
+	}
+	q.bufs = nil
 }
 
 func pickRaw(raw []uint32) uint32 {
@@ -649,9 +680,9 @@ func (dec *Decoder) setup() error {
 	if err := d.request(&d.out, 4); err != nil {
 		return err
 	}
-	var sub [32]byte
+	sub := make([]byte, 32)
 	binary.LittleEndian.PutUint32(sub[0:], eventSourceChange)
-	if err := ioctl(d.fd, vidiocSubscribeEvent, unsafe.Pointer(&sub)); err != nil {
+	if err := d.be.ioctl(vidiocSubscribeEvent, sub, nil); err != nil {
 		return err
 	}
 	return d.stream(&d.out, true)
@@ -661,8 +692,8 @@ func (dec *Decoder) sourceChanged() bool {
 	d := dec.d
 	changed := false
 	for {
-		var ev [136]byte
-		if ioctl(d.fd, vidiocDqevent, unsafe.Pointer(&ev)) != nil {
+		ev := make([]byte, 136)
+		if d.be.ioctl(vidiocDqevent, ev, nil) != nil {
 			return changed
 		}
 		if binary.LittleEndian.Uint32(ev[0:]) == eventSourceChange {
@@ -675,12 +706,7 @@ func (dec *Decoder) startCapture() error {
 	d := dec.d
 	if d.cap.on {
 		d.stream(&d.cap, false)
-		for _, b := range d.cap.bufs {
-			for _, p := range b.planes {
-				unix.Munmap(p)
-			}
-		}
-		d.cap.bufs = nil
+		d.unmap(&d.cap)
 		d.request(&d.cap, 0)
 	}
 	cur, err := d.setFormat(d.cap.typ, pixFormat{}, true)
@@ -690,7 +716,7 @@ func (dec *Decoder) startCapture() error {
 	raw := cur.Format
 	if !slices.Contains(decodable, raw) {
 		raw = 0
-		offered := formats(d.fd, d.cap.typ)
+		offered := formats(d.be, d.cap.typ)
 		for _, f := range decodable {
 			if slices.Contains(offered, f) {
 				raw = f
