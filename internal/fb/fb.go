@@ -92,7 +92,14 @@ func ioctl(f *os.File, req uintptr, arg unsafe.Pointer) error {
 	return nil
 }
 
+func NewCanvas(w, h int) *Display {
+	return &Display{mem: make([]byte, w*h*4), W: w, H: h, Stride: w * 4}
+}
+
 func (d *Display) Close() error {
+	if d.f == nil {
+		return nil
+	}
 	syscall.Munmap(d.mem)
 	return d.f.Close()
 }

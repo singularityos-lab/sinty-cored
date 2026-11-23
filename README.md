@@ -5,13 +5,19 @@ your desktop and shows it on paired screens: a TV, a monitor with a thin
 client, a laptop shell. Screens send keyboard and pointer input back.
 
 `sinty-cored` runs on the Core. `sinty-screen` runs on a screen and draws on
-the Linux framebuffer, reading keyboards and pointers from `/dev/input`.
+the Linux framebuffer, reading keyboards and pointers from `/dev/input`. With
+`-window` it shows the Core in a window of a running Wayland desktop instead,
+so a laptop or a phone can be the screen of another Sinty device.
 
 ## How it works
 
 - **Pairing.** Settings on the Core opens a pairing window. The screen shows a
   six digit code, the person types it on the Core. Both sides then hold each
   other's key, and the Core asks `sinty-keyd` to trust the screen.
+- **Paired devices.** Two Sinty devices already paired through Nearby skip
+  the code: the Core sends its key over that channel, the screen adopts it
+  (`sinty-screen -core-id -core-name -core-key`), and the Core trusts the
+  screen with `AdmitScreen`.
 - **Sessions.** Every session starts with a fresh key exchange signed by both
   identities, then runs AES-256-GCM in each direction. Removing a screen in
   Settings, or revoking it in `sinty-keyd`, ends its session at once.

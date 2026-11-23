@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -17,10 +18,13 @@ import (
 
 	"github.com/singularityos-lab/sinty-cored/internal/channel"
 	"github.com/singularityos-lab/sinty-cored/internal/fb"
+	"github.com/singularityos-lab/sinty-cored/internal/input"
+	"github.com/singularityos-lab/sinty-cored/internal/pair"
 	"github.com/singularityos-lab/sinty-cored/internal/service"
 	"github.com/singularityos-lab/sinty-cored/internal/terminal"
 	"github.com/singularityos-lab/sinty-cored/internal/v4l2"
 	"github.com/singularityos-lab/sinty-cored/internal/vault"
+	"github.com/singularityos-lab/sinty-cored/internal/wl"
 )
 
 type found struct {
@@ -85,6 +89,15 @@ func (l *link) feed(dev int, typ, code uint16, value int32) {
 	}
 }
 
+func (l *link) send(events []input.Event) {
+	l.mu.Lock()
+	s := l.sess
+	l.mu.Unlock()
+	if s != nil {
+		s.Send(events)
+	}
+}
+
 func (l *link) use(s *terminal.Session) {
 	l.mu.Lock()
 	l.sess = s
@@ -112,6 +125,11 @@ func main() {
 	size := flag.String("size", "", "draw into a plain file of this size, as WIDTHxHEIGHT")
 	codecDir := flag.String("codecs", "/dev", "directory with the video codec devices, none when empty")
 	codecHelper := flag.String("codec-helper", v4l2.DefaultHelper, "helper that reaches codecs behind a vendor V4L2 library, none when empty")
+	window := flag.Bool("window", false, "show the Core in a window of the running desktop")
+	printID := flag.Bool("id", false, "print the id of this screen and exit")
+	coreID := flag.String("core-id", "", "with -core-key, trust this Core without a pairing code and exit")
+	coreName := flag.String("core-name", "", "name of the Core given with -core-id")
+	coreKey := flag.String("core-key", "", "base64 public key of the Core given with -core-id")
 	flag.Parse()
 	log.SetFlags(0)
 	log.SetPrefix("sinty-screen: ")
@@ -126,6 +144,25 @@ func main() {
 	}
 	if err != nil {
 		log.Fatalf("identity: %v", err)
+	}
+	if *printID {
+		fmt.Println(id.ID())
+		return
+	}
+	if *coreKey != "" {
+		public, err := base64.StdEncoding.DecodeString(*coreKey)
+		if err != nil {
+			log.Fatalf("core key: %v", err)
+		}
+		t := &terminal.Terminal{Identity: id, State: *state}
+		if err := t.Adopt(pair.Peer{ID: *coreID, Name: *coreName, Public: public}); err != nil {
+			log.Fatalf("core: %v", err)
+		}
+		return
+	}
+	if *window {
+		showWindow(id, *name, *layout, *state, *core)
+		return
 	}
 	disp, err := openDisplay(*fbPath, *size)
 	if err != nil {
@@ -172,6 +209,47 @@ func main() {
 			log.Print(err)
 		}
 		time.Sleep(2 * time.Second)
+	}
+}
+
+func showWindow(id pair.Identity, name, layout, state, core string) {
+	term := &terminal.Terminal{Identity: id, Name: name, Layout: layout, State: state}
+	title := "Sinty Core"
+	if paired, err := term.Core(); err == nil && paired.Name != "" {
+		title = paired.Name
+	}
+	win, err := wl.OpenWindow(wl.SocketPath(), title, "dev.sinty.Screen", 1280, 720)
+	if err != nil {
+		log.Fatalf("window: %v", err)
+	}
+	defer win.Close()
+	term.Display = win
+	term.W, term.H = win.Size()
+	l := &link{ptr: fb.NewPointer(term.W, term.H)}
+	win.OnInput = l.send
+	go func() {
+		if err := win.Run(); err != nil {
+			log.Printf("window: %v", err)
+		}
+		win.Close()
+	}()
+	go func() {
+		for {
+			if err := run(term, l, core); err != nil {
+				log.Print(err)
+			}
+			select {
+			case <-win.Closed():
+				return
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}()
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	select {
+	case <-win.Closed():
+	case <-sigs:
 	}
 }
 

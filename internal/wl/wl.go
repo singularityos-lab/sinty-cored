@@ -44,9 +44,11 @@ type Client struct {
 	shmFile      *os.File
 	shmMem       []byte
 	shmKey       [4]int
+
+	guard sync.Locker
 }
 
-func Connect(socket string) (*Client, error) {
+func dial(socket string) (*Client, error) {
 	addr, err := net.ResolveUnixAddr("unix", socket)
 	if err != nil {
 		return nil, err
@@ -84,6 +86,15 @@ func Connect(socket string) (*Client, error) {
 		conn.Close()
 		return nil, err
 	}
+	return c, nil
+}
+
+func Connect(socket string) (*Client, error) {
+	c, err := dial(socket)
+	if err != nil {
+		return nil, err
+	}
+	conn := c.conn
 	c.shm = c.bind("wl_shm", 1)
 	c.seat = c.bind("wl_seat", 1)
 	c.copier = c.bind("zwlr_screencopy_manager_v1", 2)
@@ -208,6 +219,10 @@ func (c *Client) dispatch(deadline time.Time) error {
 			}
 		}
 	}
+	if c.guard != nil {
+		c.guard.Lock()
+		defer c.guard.Unlock()
+	}
 	data := append(c.pending, buf[:n]...)
 	for len(data) >= 8 {
 		size := int(binary.LittleEndian.Uint32(data[4:]) >> 16)
@@ -250,7 +265,19 @@ type Frame struct {
 const (
 	FormatARGB8888 = 0
 	FormatXRGB8888 = 1
+	FormatABGR8888 = 0x34324241
+	FormatXBGR8888 = 0x34324258
 )
+
+func rank(format uint32) int {
+	switch format {
+	case FormatXRGB8888, FormatARGB8888:
+		return 2
+	case FormatXBGR8888, FormatABGR8888:
+		return 1
+	}
+	return 0
+}
 
 func shmFile(size int) (*os.File, []byte, error) {
 	dir := "/dev/shm"
@@ -321,7 +348,7 @@ func (c *Client) Capture(cursor, onDamage bool, into []byte) (*Frame, error) {
 		case 0:
 			if len(args) >= 16 {
 				format := binary.LittleEndian.Uint32(args)
-				if format == FormatARGB8888 || format == FormatXRGB8888 || !offered {
+				if !offered || rank(format) > rank(fr.Format) {
 					fr.Format = format
 					fr.W = int(binary.LittleEndian.Uint32(args[4:]))
 					fr.H = int(binary.LittleEndian.Uint32(args[8:]))
@@ -351,7 +378,7 @@ func (c *Client) Capture(cursor, onDamage bool, into []byte) (*Frame, error) {
 	if !offered {
 		return nil, ErrFailed
 	}
-	if fr.Format != FormatARGB8888 && fr.Format != FormatXRGB8888 {
+	if rank(fr.Format) == 0 {
 		return nil, ErrFormat
 	}
 	if err := c.ensureBuffer(fr.Format, fr.W, fr.H, fr.Stride); err != nil {
@@ -381,6 +408,19 @@ func (c *Client) Capture(cursor, onDamage bool, into []byte) (*Frame, error) {
 		fr.Pix = make([]byte, size)
 	}
 	copy(fr.Pix, c.shmMem[:size])
+	if rank(fr.Format) == 1 {
+		for y := 0; y < fr.H; y++ {
+			row := fr.Pix[y*fr.Stride : y*fr.Stride+fr.W*4]
+			for i := 0; i < len(row); i += 4 {
+				row[i], row[i+2] = row[i+2], row[i]
+			}
+		}
+		if fr.Format == FormatABGR8888 {
+			fr.Format = FormatARGB8888
+		} else {
+			fr.Format = FormatXRGB8888
+		}
+	}
 	return &fr, nil
 }
 
