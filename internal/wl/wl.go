@@ -515,6 +515,16 @@ func (c *Client) MoveTo(x, y, w, h uint32) {
 	c.send(c.pointer, 4)
 }
 
+func (c *Client) Move(dx, dy float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pointer == 0 {
+		return
+	}
+	c.send(c.pointer, 0, c.now(), fixed(dx), fixed(dy))
+	c.send(c.pointer, 4)
+}
+
 func (c *Client) Button(code uint32, pressed bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

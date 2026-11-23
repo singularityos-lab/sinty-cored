@@ -337,6 +337,13 @@ func (e *edges) handle(batch []wl.EdgeEvent) {
 			e.send(p, p.ptr.Key(ev.Code, ev.Pressed))
 		case wl.EdgeAxis:
 			e.send(p, p.ptr.Axis(ev.Code, ev.X, ev.Discrete))
+		case wl.WindowEntered:
+			e.emit(map[string]any{"event": "window", "id": p.id, "state": "entered", "app_id": ev.AppID, "pid": ev.PID,
+				"output": p.output, "side": sideNames[p.side], "fraction": ev.Y})
+		case wl.WindowLeft:
+			e.emit(map[string]any{"event": "window", "id": p.id, "state": "left"})
+		case wl.WindowDropped:
+			e.emit(map[string]any{"event": "window", "id": p.id, "state": "dropped"})
 		case wl.EdgeLeft:
 			e.send(p, p.ptr.Leave())
 			p.lastCross = time.Now()

@@ -29,6 +29,22 @@ const (
 	EdgeLeft
 	EdgePressing
 	ProbePushed
+	WindowEntered
+	WindowLeft
+	WindowDropped
+)
+
+const (
+	edgePressing uint16 = iota
+	edgeEntered
+	edgeMotion
+	edgeButton
+	edgeAxis
+	edgeKey
+	edgeLeft
+	edgeWindowEntered
+	edgeWindowLeft
+	edgeWindowDropped
 )
 
 const (
@@ -46,6 +62,8 @@ type EdgeEvent struct {
 	Discrete int32
 	Progress float64
 	Output   string
+	AppID    string
+	PID      int32
 }
 
 type Output struct {
@@ -73,7 +91,7 @@ func OpenShare(socket string) (*Share, error) {
 	}
 	s := &Share{c: c, wake: make(chan struct{}, 1)}
 	c.guard = &s.mu
-	s.manager = c.bind("zsingularity_input_share_manager_v1", 1)
+	s.manager = c.bind("zsingularity_input_share_manager_v1", 2)
 	if s.manager == 0 {
 		c.conn.Close()
 		return nil, ErrNoShare
@@ -123,21 +141,32 @@ func (s *Share) Edge(output string, side Side, start, end int) uint32 {
 	id = s.c.newID(func(op uint16, args []byte) {
 		e := EdgeEvent{Edge: id}
 		switch {
-		case op == 6 && len(args) >= 12:
+		case op == edgePressing && len(args) >= 12:
 			e.Kind, e.X, e.Y, e.Progress = EdgePressing, fixedArg(args), fixedArg(args[4:]), fixedArg(args[8:])
-		case op == 0 && len(args) >= 8:
+		case op == edgeEntered && len(args) >= 8:
 			e.Kind, e.X, e.Y = EdgeEntered, fixedArg(args), fixedArg(args[4:])
-		case op == 1 && len(args) >= 8:
+		case op == edgeMotion && len(args) >= 8:
 			e.Kind, e.X, e.Y = EdgeMotion, fixedArg(args), fixedArg(args[4:])
-		case op == 2 && len(args) >= 8:
+		case op == edgeButton && len(args) >= 8:
 			e.Kind, e.Code, e.Pressed = EdgeButton, binary.LittleEndian.Uint32(args), binary.LittleEndian.Uint32(args[4:]) != 0
-		case op == 3 && len(args) >= 12:
+		case op == edgeAxis && len(args) >= 12:
 			e.Kind, e.Code, e.X = EdgeAxis, binary.LittleEndian.Uint32(args), fixedArg(args[4:])
 			e.Discrete = int32(binary.LittleEndian.Uint32(args[8:]))
-		case op == 4 && len(args) >= 8:
+		case op == edgeKey && len(args) >= 8:
 			e.Kind, e.Code, e.Pressed = EdgeKey, binary.LittleEndian.Uint32(args), binary.LittleEndian.Uint32(args[4:]) != 0
-		case op == 5 && len(args) >= 4:
+		case op == edgeLeft && len(args) >= 4:
 			e.Kind, e.Code = EdgeLeft, binary.LittleEndian.Uint32(args)
+		case op == edgeWindowEntered:
+			app, rest := strArg(args)
+			if len(rest) < 12 {
+				return
+			}
+			e.Kind, e.AppID, e.PID = WindowEntered, app, int32(binary.LittleEndian.Uint32(rest))
+			e.X, e.Y = fixedArg(rest[4:]), fixedArg(rest[8:])
+		case op == edgeWindowLeft:
+			e.Kind = WindowLeft
+		case op == edgeWindowDropped:
+			e.Kind = WindowDropped
 		default:
 			return
 		}
