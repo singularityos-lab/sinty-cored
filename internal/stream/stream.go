@@ -3,6 +3,7 @@ package stream
 import (
 	"encoding/binary"
 	"sync"
+	"time"
 
 	"github.com/singularityos-lab/sinty-cored/internal/channel"
 	"github.com/singularityos-lab/sinty-cored/internal/input"
@@ -16,16 +17,53 @@ const (
 	Notice
 	Coded
 	Shown
+	Size
 )
 
 const (
 	FeatureShown = "shown"
 	FeatureSplit = "split-tiles"
+	FeatureInput = "input-only"
 )
 
 type Options struct {
-	InFlight int
-	Parts    int
+	InFlight   int
+	Parts      int
+	InputOnly  bool
+	OnApproach func(side uint32, position, progress float64)
+}
+
+func approaches(events []input.Event, on func(side uint32, position, progress float64)) []input.Event {
+	kept := events[:0]
+	for _, e := range events {
+		if e.Kind != input.Approach {
+			kept = append(kept, e)
+			continue
+		}
+		if on != nil && e.Code <= 3 {
+			on(e.Code, float64(e.X)/65535, min(max(float64(e.Value)/1000, 0), 1))
+		}
+	}
+	return kept
+}
+
+type Sized interface {
+	Size() (int, int)
+}
+
+func SizeMessage(w, h int) []byte {
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint16(b, uint16(min(max(w, 0), 0xffff)))
+	binary.BigEndian.PutUint16(b[2:], uint16(min(max(h, 0), 0xffff)))
+	return b
+}
+
+func ParseSize(b []byte) (int, int, bool) {
+	if len(b) != 4 {
+		return 0, 0, false
+	}
+	w, h := int(binary.BigEndian.Uint16(b)), int(binary.BigEndian.Uint16(b[2:]))
+	return w, h, w > 0 && h > 0
 }
 
 type Coder interface {
@@ -122,9 +160,42 @@ func Serve(c *channel.Conn, src Source, sink Sink, hw Hardware, opts Options, st
 				recvErr = err
 				return
 			}
-			Apply(sink, events)
+			if events = approaches(events, opts.OnApproach); len(events) > 0 {
+				Apply(sink, events)
+			}
 		}
 	}()
+	if opts.InputOnly {
+		sized, _ := src.(Sized)
+		w, h := 0, 0
+		if sized != nil {
+			w, h = sized.Size()
+		}
+		if err := c.Send(Size, SizeMessage(w, h)); err != nil {
+			return err
+		}
+		tick := time.NewTicker(time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				c.Send(Notice, []byte("stopped"))
+				return nil
+			case <-done:
+				return recvErr
+			case <-tick.C:
+				if sized == nil {
+					continue
+				}
+				if nw, nh := sized.Size(); nw != w || nh != h {
+					w, h = nw, nh
+					if err := c.Send(Size, SizeMessage(w, h)); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
 	enc := tiles.Encoder{Parts: opts.Parts}
 	var coder Coder
 	var cw, ch int

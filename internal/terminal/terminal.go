@@ -19,6 +19,8 @@ import (
 
 var ErrNotPaired = errors.New("this screen is not paired with a Core")
 
+var errNoSize = errors.New("the Core did not say how large its desktop is")
+
 type Display interface {
 	Clear()
 	Text(s string, cx, cy, scale int, c uint32)
@@ -40,6 +42,8 @@ type Terminal struct {
 	OnFrame  func(w, h int)
 	Codecs   []string
 	Decoders func(format uint32, w, h int) (Decoder, error)
+
+	InputOnly bool
 }
 
 type paired struct {
@@ -132,6 +136,9 @@ func (t *Terminal) Open(rw io.ReadWriteCloser) (*Session, error) {
 		return nil, err
 	}
 	features := append(slices.Clone(t.Codecs), stream.FeatureShown, stream.FeatureSplit)
+	if t.InputOnly {
+		features = []string{stream.FeatureInput}
+	}
 	c, err := channel.Screen(rw, t.Identity, core.Public, t.Layout, features)
 	if err != nil {
 		if errors.Is(err, channel.ErrUntrusted) {
@@ -209,3 +216,39 @@ func (t *Terminal) Show(s *Session) error {
 }
 
 func (s *Session) Close() error { return s.c.Close() }
+
+func (s *Session) Size() (int, int, error) {
+	for {
+		kind, data, err := s.c.Recv()
+		if err != nil {
+			return 0, 0, err
+		}
+		switch kind {
+		case stream.Size:
+			w, h, ok := stream.ParseSize(data)
+			if !ok {
+				return 0, 0, errNoSize
+			}
+			return w, h, nil
+		case stream.Notice:
+			return 0, 0, io.EOF
+		}
+	}
+}
+
+func (s *Session) Wait(resized func(w, h int)) error {
+	for {
+		kind, data, err := s.c.Recv()
+		if err != nil {
+			return err
+		}
+		switch kind {
+		case stream.Notice:
+			return io.EOF
+		case stream.Size:
+			if w, h, ok := stream.ParseSize(data); ok && resized != nil {
+				resized(w, h)
+			}
+		}
+	}
+}

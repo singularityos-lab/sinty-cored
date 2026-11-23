@@ -39,6 +39,7 @@ type Client struct {
 	registry, shm, seat, output, copier, pointers, keyboards uint32
 	pointer, keyboard                                        uint32
 	depressed, locked                                        uint32
+	outW, outH, outScale                                     int
 
 	pool, buffer uint32
 	shmFile      *os.File
@@ -101,13 +102,42 @@ func Connect(socket string) (*Client, error) {
 	c.pointers = c.bind("zwlr_virtual_pointer_manager_v1", 1)
 	c.keyboards = c.bind("zwp_virtual_keyboard_manager_v1", 1)
 	if len(c.outputs) > 0 {
-		c.output = c.bindGlobal(c.outputs[0], "wl_output", 1)
+		c.outScale = 1
+		c.output = c.newID(func(op uint16, args []byte) {
+			switch {
+			case op == 1 && len(args) >= 12 && binary.LittleEndian.Uint32(args)&1 != 0:
+				c.outW = int(int32(binary.LittleEndian.Uint32(args[4:])))
+				c.outH = int(int32(binary.LittleEndian.Uint32(args[8:])))
+			case op == 3 && len(args) >= 4:
+				c.outScale = max(int(int32(binary.LittleEndian.Uint32(args))), 1)
+			}
+		})
+		g := c.outputs[0]
+		c.send(c.registry, 0, u32(g.name), sarg("wl_output"), u32(min(g.version, 2)), u32(c.output))
 	}
 	if err := c.roundtrip(); err != nil {
 		conn.Close()
 		return nil, err
 	}
+	if c.output != 0 {
+		if err := c.roundtrip(); err != nil {
+			conn.Close()
+			return nil, err
+		}
+	}
 	return c, nil
+}
+
+func (c *Client) Size() (int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.output != 0 {
+		c.roundtrip()
+	}
+	if c.outScale < 1 {
+		return c.outW, c.outH
+	}
+	return c.outW / c.outScale, c.outH / c.outScale
 }
 
 func (c *Client) bind(iface string, want uint32) uint32 {

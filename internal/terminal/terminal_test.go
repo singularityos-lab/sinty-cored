@@ -432,3 +432,86 @@ func TestCoreWaitsUntilFramesAreShown(t *testing.T) {
 	c.Close()
 	<-served
 }
+
+type sizedSource struct {
+	source
+	mu   sync.Mutex
+	w, h int
+}
+
+func (s *sizedSource) Size() (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w, s.h
+}
+
+func (s *sizedSource) resize(w, h int) {
+	s.mu.Lock()
+	s.w, s.h = w, h
+	s.mu.Unlock()
+}
+
+func TestInputOnlySessionSendsSizeAndApproaches(t *testing.T) {
+	core, me := identity(t), identity(t)
+	src := &sizedSource{w: 1920, h: 1080}
+	k := &sink{}
+	approached := make(chan [3]float64, 4)
+	c, d := net.Pipe()
+	stop := make(chan struct{})
+	served := make(chan error, 1)
+	go func() {
+		cc, req, err := channel.Core(d, core, func(id string) (string, bool) { return "Laptop", true })
+		if err != nil {
+			served <- err
+			return
+		}
+		opts := stream.Options{InputOnly: slices.Contains(req.Codecs, stream.FeatureInput)}
+		opts.OnApproach = func(side uint32, position, progress float64) {
+			approached <- [3]float64{float64(side), position, progress}
+		}
+		served <- stream.Serve(cc, src, k, nil, opts, stop)
+	}()
+	term := &Terminal{Identity: me, State: t.TempDir(), InputOnly: true}
+	if err := term.Adopt(pair.Peer{ID: core.ID(), Name: "Desk", Public: core.Public()}); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := term.Open(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, h, err := sess.Size()
+	if err != nil || w != 1920 || h != 1080 {
+		t.Fatalf("size %dx%d %v", w, h, err)
+	}
+	if err := sess.Send([]input.Event{{Kind: input.Approach, Code: 0, Value: 500, X: 65535}, {Kind: input.Motion, X: 65535, Y: 0}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case a := <-approached:
+		if a != [3]float64{0, 1, 0.5} {
+			t.Fatalf("approach %v", a)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the approach never reached the Core")
+	}
+	resized := make(chan [2]int, 1)
+	go sess.Wait(func(w, h int) { resized <- [2]int{w, h} })
+	src.resize(1280, 720)
+	select {
+	case r := <-resized:
+		if r != [2]int{1280, 720} {
+			t.Fatalf("resized to %v", r)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the new size never reached the screen")
+	}
+	k.mu.Lock()
+	moved := slices.Contains(k.events, "move-top-right")
+	k.mu.Unlock()
+	if !moved {
+		t.Fatalf("the motion after the approach was lost: %v", k.events)
+	}
+	close(stop)
+	c.Close()
+	<-served
+}

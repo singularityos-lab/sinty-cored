@@ -94,6 +94,7 @@ func main() {
 		Kept:     kept,
 		Vault:    store,
 		Name:     *name,
+		Port:     *port,
 		Trust:    service.KeyTrust{Conn: conn},
 		Power:    service.Powerd{Conn: conn},
 		Desktop:  desktop,

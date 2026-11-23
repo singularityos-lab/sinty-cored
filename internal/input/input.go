@@ -10,6 +10,7 @@ const (
 	Button
 	Wheel
 	Key
+	Approach
 )
 
 const size = 16
@@ -44,7 +45,7 @@ func Decode(data []byte) ([]Event, error) {
 	for i := 0; i < len(data); i += size {
 		b := data[i:]
 		e := Event{b[0], binary.BigEndian.Uint32(b[4:]), int32(binary.BigEndian.Uint32(b[8:])), binary.BigEndian.Uint16(b[12:]), binary.BigEndian.Uint16(b[14:])}
-		if e.Kind < Motion || e.Kind > Key {
+		if e.Kind < Motion || e.Kind > Approach {
 			return nil, ErrBadEvent
 		}
 		out = append(out, e)

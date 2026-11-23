@@ -97,6 +97,7 @@ type Config struct {
 	Kept       string
 	Vault      Vault
 	Name       string
+	Port       int
 	Trust      Trust
 	Power      Power
 	Desktop    Desktop
@@ -173,6 +174,7 @@ func Export(conn *dbus.Conn, s *Service) error {
 		"UsbMode":       {Value: "off", Emit: prop.EmitTrue},
 		"Encoder":       {Value: s.encoderKind(), Emit: prop.EmitFalse},
 		"Form":          {Value: form, Emit: prop.EmitTrue},
+		"Port":          {Value: int32(s.port()), Emit: prop.EmitFalse},
 	}})
 	if err != nil {
 		return err
@@ -188,6 +190,7 @@ func Export(conn *dbus.Conn, s *Service) error {
 				{Name: "PairingRequest", Args: []introspect.Arg{{Name: "screen", Type: "s"}}},
 				{Name: "PairingFinished", Args: []introspect.Arg{{Name: "screen", Type: "s"}, {Name: "result", Type: "s"}}},
 				{Name: "PhoneCommand", Args: []introspect.Arg{{Name: "device", Type: "s"}, {Name: "command", Type: "s"}}},
+				{Name: "Approach", Args: []introspect.Arg{{Name: "screen", Type: "s"}, {Name: "side", Type: "s"}, {Name: "position", Type: "d"}, {Name: "progress", Type: "d"}}},
 			},
 		}},
 	}
@@ -206,6 +209,15 @@ func (s *Service) set(name string, v any) {
 	if s.props != nil {
 		s.props.SetMust(Iface, name, v)
 	}
+}
+
+var sideNames = [4]string{"left", "right", "top", "bottom"}
+
+func (s *Service) port() int {
+	if s.cfg.Port > 0 {
+		return s.cfg.Port
+	}
+	return ScreenPort
 }
 
 func (s *Service) emit(name string, args ...any) {
@@ -590,9 +602,23 @@ func (s *Service) session(rw rwc) {
 		return
 	}
 	defer done()
+	opts := stream.Options{}
+	if slices.Contains(req.Codecs, stream.FeatureShown) {
+		opts.InFlight = 2
+	}
+	if slices.Contains(req.Codecs, stream.FeatureSplit) {
+		opts.Parts = runtime.NumCPU()
+	}
+	opts.InputOnly = slices.Contains(req.Codecs, stream.FeatureInput)
+	if opts.InputOnly {
+		name := req.Peer.Name
+		opts.OnApproach = func(side uint32, position, progress float64) {
+			s.emit("Approach", name, sideNames[side], position, progress)
+		}
+	}
 	var hw stream.Hardware
 	device := ""
-	if s.cfg.Codecs != nil {
+	if s.cfg.Codecs != nil && !opts.InputOnly {
 		hw, device = s.cfg.Codecs.Pick(req.Codecs)
 	}
 	id := req.Peer.ID
@@ -604,7 +630,7 @@ func (s *Service) session(rw rwc) {
 	s.sessions[id] = sess
 	first := len(s.sessions) == 1
 	s.mu.Unlock()
-	if first && s.cfg.Power != nil {
+	if first && !opts.InputOnly && s.cfg.Power != nil {
 		if err := s.cfg.Power.SetStreaming(true); err != nil {
 			log.Printf("streaming state not set: %v", err)
 		}
@@ -615,13 +641,6 @@ func (s *Service) session(rw rwc) {
 		}
 	}
 	s.refreshScreens()
-	opts := stream.Options{}
-	if slices.Contains(req.Codecs, stream.FeatureShown) {
-		opts.InFlight = 2
-	}
-	if slices.Contains(req.Codecs, stream.FeatureSplit) {
-		opts.Parts = runtime.NumCPU()
-	}
 	stream.Serve(conn, src, sink, hw, opts, sess.stop)
 	s.mu.Lock()
 	if s.sessions[id] == sess {

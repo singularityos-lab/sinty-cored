@@ -130,11 +130,16 @@ func main() {
 	coreID := flag.String("core-id", "", "with -core-key, trust this Core without a pairing code and exit")
 	coreName := flag.String("core-name", "", "name of the Core given with -core-id")
 	coreKey := flag.String("core-key", "", "base64 public key of the Core given with -core-id")
+	edges := flag.Bool("edges", false, "hand this desktop's pointer and keyboard to the Cores placed beside its outputs, driven by commands on standard input")
 	flag.Parse()
 	log.SetFlags(0)
 	log.SetPrefix("sinty-screen: ")
 	if *name == "" {
 		*name = hostname()
+	}
+	if *edges {
+		serveEdges(*name, *layout, os.Stdin, os.Stdout)
+		return
 	}
 	store := vault.Store{Dir: *state, TPM: vault.NewHelper(filepath.Join(*state, "tpm"))}
 	id, _, err := store.Load()
