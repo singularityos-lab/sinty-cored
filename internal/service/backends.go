@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/godbus/dbus/v5"
@@ -102,17 +103,25 @@ func (p Powerd) Form() string {
 }
 
 type Wayland struct {
-	RunDir  string
-	Skip    []string
-	MinUID  uint32
-	Connect func(socket string) (*wl.Client, error)
+	RunDir    string
+	SharedDir string
+	Skip      []string
+	MinUID    uint32
+	Connect   func(socket string) (*wl.Client, error)
 }
 
 func NewWayland() *Wayland {
-	return &Wayland{RunDir: "/run/user", Skip: []string{"greeter"}, MinUID: 1000, Connect: wl.Connect}
+	return &Wayland{RunDir: "/run/user", SharedDir: "/run/singularity", Skip: []string{"greeter"}, MinUID: 1000, Connect: wl.Connect}
 }
 
 func (w *Wayland) socket() (string, uint32, bool) {
+	if path, uid, ok := w.userSocket(); ok {
+		return path, uid, true
+	}
+	return w.sharedSocket()
+}
+
+func (w *Wayland) userSocket() (string, uint32, bool) {
 	matches, _ := filepath.Glob(filepath.Join(w.RunDir, "*", "wayland-[0-9]*"))
 	best, bestUID, bestTime := "", uint32(0), int64(0)
 	for _, m := range matches {
@@ -132,6 +141,62 @@ func (w *Wayland) socket() (string, uint32, bool) {
 		}
 	}
 	return best, bestUID, best != ""
+}
+
+func (w *Wayland) sharedSocket() (string, uint32, bool) {
+	if w.SharedDir == "" {
+		return "", 0, false
+	}
+	uid, ok := w.sessionUser()
+	if !ok {
+		return "", 0, false
+	}
+	matches, _ := filepath.Glob(filepath.Join(w.SharedDir, "wayland-[0-9]*"))
+	for _, m := range matches {
+		if filepath.Ext(m) == ".lock" {
+			continue
+		}
+		if st, err := os.Stat(m); err == nil && st.Mode()&os.ModeSocket != 0 {
+			return m, uid, true
+		}
+	}
+	return "", 0, false
+}
+
+func (w *Wayland) sessionUser() (uint32, bool) {
+	matches, _ := filepath.Glob(filepath.Join(w.RunDir, "*", "singularity-desktop-session.pid"))
+	best, bestUID, bestTime := false, uint32(0), int64(0)
+	for _, m := range matches {
+		dir, err := os.Stat(filepath.Dir(m))
+		if err != nil {
+			continue
+		}
+		uid := dir.Sys().(*syscall.Stat_t).Uid
+		if uid < w.MinUID || w.skipped(uid) || !sessionAlive(m, uid) {
+			continue
+		}
+		st, err := os.Stat(m)
+		if err != nil {
+			continue
+		}
+		if t := st.ModTime().UnixNano(); !best || t > bestTime {
+			best, bestUID, bestTime = true, uid, t
+		}
+	}
+	return bestUID, best
+}
+
+func sessionAlive(pidFile string, uid uint32) bool {
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return false
+	}
+	st, err := os.Stat("/proc/" + strconv.Itoa(pid))
+	return err == nil && st.Sys().(*syscall.Stat_t).Uid == uid
 }
 
 func (w *Wayland) skipped(uid uint32) bool {
