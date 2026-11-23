@@ -125,7 +125,7 @@ func TestPairThenStreamAndControl(t *testing.T) {
 			served <- err
 			return
 		}
-		served <- stream.Serve(cc, src, k, nil, stop)
+		served <- stream.Serve(cc, src, k, nil, stream.Options{}, stop)
 	}()
 	sess, err := term.Open(c)
 	if err != nil {
@@ -234,10 +234,10 @@ func codecSession(t *testing.T, failAt int) (*fakeCoder, int, *screen) {
 			return
 		}
 		var hw stream.Hardware
-		if len(req.Codecs) == 1 && req.Codecs[0] == "TEST" {
+		if slices.Contains(req.Codecs, "TEST") {
 			hw = func(w, h int) (stream.Coder, error) { return coder, nil }
 		}
-		served <- stream.Serve(cc, src, &sink{}, hw, stop)
+		served <- stream.Serve(cc, src, &sink{}, hw, stream.Options{}, stop)
 	}()
 	sess, err := term.Open(c)
 	if err != nil {
@@ -338,7 +338,7 @@ func TestSessionThroughVideoCodec(t *testing.T) {
 				break
 			}
 		}
-		served <- stream.Serve(cc, src, &sink{}, hw, stop)
+		served <- stream.Serve(cc, src, &sink{}, hw, stream.Options{}, stop)
 	}()
 	sess, err := term.Open(c)
 	if err != nil {
@@ -379,4 +379,56 @@ func TestSessionThroughVideoCodec(t *testing.T) {
 	if coded != 1 {
 		t.Fatalf("hardware encoder opened %d times", coded)
 	}
+}
+
+func TestCoreWaitsUntilFramesAreShown(t *testing.T) {
+	core, me := identity(t), identity(t)
+	var frames []*wl.Frame
+	for i := range 4 {
+		frames = append(frames, &wl.Frame{W: 64, H: 32, Stride: 256, Pix: bytes.Repeat([]byte{byte(i), 6, 7, 255}, 64*32)})
+	}
+	src := &source{frames: frames}
+	c, d := net.Pipe()
+	stop := make(chan struct{})
+	served := make(chan error, 1)
+	go func() {
+		cc, _, err := channel.Core(d, core, func(id string) (string, bool) { return "TV", true })
+		if err != nil {
+			served <- err
+			return
+		}
+		served <- stream.Serve(cc, src, &sink{}, nil, stream.Options{InFlight: 1}, stop)
+	}()
+	sc, err := channel.Screen(c, me, core.Public(), "us", []string{stream.FeatureShown})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := func() {
+		t.Helper()
+		if kind, _, err := sc.Recv(); err != nil || kind != stream.Video {
+			t.Fatalf("frame: kind %d %v", kind, err)
+		}
+	}
+	frame()
+	got := make(chan struct{})
+	go func() {
+		sc.Recv()
+		close(got)
+	}()
+	select {
+	case <-got:
+		t.Fatal("a second frame was sent before the first was shown")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := sc.Send(stream.Shown, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the next frame never came after the first was shown")
+	}
+	close(stop)
+	c.Close()
+	<-served
 }

@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -613,7 +615,14 @@ func (s *Service) session(rw rwc) {
 		}
 	}
 	s.refreshScreens()
-	stream.Serve(conn, src, sink, hw, sess.stop)
+	opts := stream.Options{}
+	if slices.Contains(req.Codecs, stream.FeatureShown) {
+		opts.InFlight = 2
+	}
+	if slices.Contains(req.Codecs, stream.FeatureSplit) {
+		opts.Parts = runtime.NumCPU()
+	}
+	stream.Serve(conn, src, sink, hw, opts, sess.stop)
 	s.mu.Lock()
 	if s.sessions[id] == sess {
 		delete(s.sessions, id)

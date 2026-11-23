@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/singularityos-lab/sinty-cored/internal/channel"
@@ -130,7 +131,8 @@ func (t *Terminal) Open(rw io.ReadWriteCloser) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := channel.Screen(rw, t.Identity, core.Public, t.Layout, t.Codecs)
+	features := append(slices.Clone(t.Codecs), stream.FeatureShown, stream.FeatureSplit)
+	c, err := channel.Screen(rw, t.Identity, core.Public, t.Layout, features)
 	if err != nil {
 		if errors.Is(err, channel.ErrUntrusted) {
 			t.message("This screen was removed from", core.Name, "Pair it again from Settings on the Core")
@@ -177,14 +179,14 @@ func (t *Terminal) Show(s *Session) error {
 				t.Codecs = nil
 				return err
 			}
-			if pix == nil {
-				continue
-			}
-			if t.Display != nil {
+			if pix != nil && t.Display != nil {
 				t.Display.Draw(pix, w, h)
 			}
-			if t.OnFrame != nil {
+			if pix != nil && t.OnFrame != nil {
 				t.OnFrame(w, h)
+			}
+			if err := s.c.Send(stream.Shown, nil); err != nil {
+				return err
 			}
 		case stream.Video:
 			if _, err := dec.Decode(data); err != nil {
@@ -195,6 +197,9 @@ func (t *Terminal) Show(s *Session) error {
 			}
 			if t.OnFrame != nil {
 				t.OnFrame(dec.W, dec.H)
+			}
+			if err := s.c.Send(stream.Shown, nil); err != nil {
+				return err
 			}
 		case stream.Notice:
 			t.message("The Core stopped showing this screen", "", "")

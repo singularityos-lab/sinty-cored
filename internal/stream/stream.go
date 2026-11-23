@@ -15,7 +15,18 @@ const (
 	Input
 	Notice
 	Coded
+	Shown
 )
+
+const (
+	FeatureShown = "shown"
+	FeatureSplit = "split-tiles"
+)
+
+type Options struct {
+	InFlight int
+	Parts    int
+}
 
 type Coder interface {
 	Encode(pix []byte, stride int) ([]byte, error)
@@ -70,7 +81,23 @@ func Apply(sink Sink, events []input.Event) {
 	sink.Flush()
 }
 
-func Serve(c *channel.Conn, src Source, sink Sink, hw Hardware, stop <-chan struct{}) error {
+func Serve(c *channel.Conn, src Source, sink Sink, hw Hardware, opts Options, stop <-chan struct{}) error {
+	var credits chan struct{}
+	refund := func() {
+		if credits == nil {
+			return
+		}
+		select {
+		case credits <- struct{}{}:
+		default:
+		}
+	}
+	if opts.InFlight > 0 {
+		credits = make(chan struct{}, opts.InFlight)
+		for range opts.InFlight {
+			credits <- struct{}{}
+		}
+	}
 	var once sync.Once
 	done := make(chan struct{})
 	finish := func() { once.Do(func() { close(done) }) }
@@ -83,6 +110,10 @@ func Serve(c *channel.Conn, src Source, sink Sink, hw Hardware, stop <-chan stru
 				recvErr = err
 				return
 			}
+			if kind == Shown {
+				refund()
+				continue
+			}
 			if kind != Input || sink == nil {
 				continue
 			}
@@ -94,7 +125,7 @@ func Serve(c *channel.Conn, src Source, sink Sink, hw Hardware, stop <-chan stru
 			Apply(sink, events)
 		}
 	}()
-	var enc tiles.Encoder
+	enc := tiles.Encoder{Parts: opts.Parts}
 	var coder Coder
 	var cw, ch int
 	defer func() {
@@ -113,11 +144,22 @@ func Serve(c *channel.Conn, src Source, sink Sink, hw Hardware, stop <-chan stru
 			return recvErr
 		default:
 		}
+		if credits != nil {
+			select {
+			case <-credits:
+			case <-stop:
+				c.Send(Notice, []byte("stopped"))
+				return nil
+			case <-done:
+				return recvErr
+			}
+		}
 		f, err := src.Capture(true, !first, buf)
 		if err != nil {
 			return err
 		}
 		if f == nil {
+			refund()
 			continue
 		}
 		buf = f.Pix
@@ -136,10 +178,10 @@ func Serve(c *channel.Conn, src Source, sink Sink, hw Hardware, stop <-chan stru
 		if coder != nil {
 			data, err := coder.Encode(f.Pix, f.Stride)
 			if err == nil {
-				if len(data) > 0 {
-					if err := c.Send(Coded, append(CodedHeader(coder.Format(), f.W, f.H), data...)); err != nil {
-						return err
-					}
+				if len(data) == 0 {
+					refund()
+				} else if err := c.Send(Coded, append(CodedHeader(coder.Format(), f.W, f.H), data...)); err != nil {
+					return err
 				}
 				continue
 			}
@@ -152,6 +194,7 @@ func Serve(c *channel.Conn, src Source, sink Sink, hw Hardware, stop <-chan stru
 			return err
 		}
 		if msg == nil {
+			refund()
 			continue
 		}
 		if err := c.Send(Video, msg); err != nil {

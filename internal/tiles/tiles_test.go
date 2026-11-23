@@ -66,6 +66,35 @@ func TestNewScreenSizeStartsOver(t *testing.T) {
 	}
 }
 
+func TestSplitFramesMatchSingleStream(t *testing.T) {
+	e := Encoder{Parts: 8}
+	var d Decoder
+	f := frame(1920, 1080, 16, 3)
+	msg, n, err := e.Encode(f)
+	if err != nil || n != 30*17 || msg[1] != split {
+		t.Fatalf("first frame: %d tiles %v", n, err)
+	}
+	if _, err := d.Decode(msg); err != nil {
+		t.Fatal(err)
+	}
+	same(t, f, &d)
+	g := frame(1920, 1080, 16, 4)
+	copy(g.Pix[:g.Stride*200], f.Pix)
+	msg, n, err = e.Encode(g)
+	if err != nil || n != 30*14 {
+		t.Fatalf("second frame: %d tiles %v", n, err)
+	}
+	rects, err := d.Decode(msg)
+	if err != nil || len(rects) != n {
+		t.Fatalf("decode: %d rects %v", len(rects), err)
+	}
+	same(t, g, &d)
+	msg[len(msg)-5] ^= 0xff
+	if _, err := (&Decoder{}).Decode(msg); err == nil {
+		t.Fatal("a damaged split frame was accepted")
+	}
+}
+
 func TestDamagedFramesAreRefused(t *testing.T) {
 	var e Encoder
 	msg, _, _ := e.Encode(frame(128, 128, 0, 4))
