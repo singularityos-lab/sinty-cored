@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -378,6 +380,60 @@ func TestWrongCodeKeepsTheScreenOut(t *testing.T) {
 	}
 }
 
+func TestAnAdmittedScreenShowsTheDesktopWithoutACode(t *testing.T) {
+	r := setup(t, uint32(os.Getuid()))
+	disp := &display{}
+	term := &terminal.Terminal{Identity: identity(t), Name: "Laptop", Layout: "it", State: t.TempDir(), Display: disp, W: 640, H: 480}
+
+	var id, name, key string
+	if err := r.obj.StoreProperty(Iface+".ID", &id); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.obj.StoreProperty(Iface+".Name", &name); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.obj.StoreProperty(Iface+".PublicKey", &key); err != nil {
+		t.Fatal(err)
+	}
+	public, err := base64.StdEncoding.DecodeString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := term.Adopt(pair.Peer{ID: id, Name: name, Public: public}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := term.Open(r.dial()); !errors.Is(err, channel.ErrUntrusted) {
+		t.Fatalf("a screen the Core never admitted opened a session: %v", err)
+	}
+	for _, bad := range [][]any{{"x", "Laptop"}, {term.Identity.ID(), ""}, {strings.ToUpper(term.Identity.ID()), "Laptop"}} {
+		if err := r.obj.Call(Iface+".AdmitScreen", 0, bad...).Err; err == nil {
+			t.Fatalf("AdmitScreen%v accepted", bad)
+		}
+	}
+	if err := r.obj.Call(Iface+".AdmitScreen", 0, term.Identity.ID(), "Laptop").Err; err != nil {
+		t.Fatal(err)
+	}
+	if s := r.screens(); len(s) != 1 || s[0].ID != term.Identity.ID() || s[0].Name != "Laptop" {
+		t.Fatalf("screens %+v", s)
+	}
+	sess, err := term.Open(r.dial())
+	if err != nil {
+		t.Fatal(err)
+	}
+	go term.Show(sess)
+	eventually(t, "first frame", func() bool { return disp.frames() > 0 })
+	sess.Close()
+	eventually(t, "session ended", func() bool { st := r.pw.states(); return len(st) == 2 && !st[1] })
+}
+
+func TestAdoptingRejectsAKeyThatIsNotTheCores(t *testing.T) {
+	term := &terminal.Terminal{Identity: identity(t), State: t.TempDir()}
+	other := identity(t)
+	if err := term.Adopt(pair.Peer{ID: identity(t).ID(), Name: "Core", Public: other.Public()}); err == nil {
+		t.Fatal("adopted a Core whose key does not match its id")
+	}
+}
+
 func TestOnlyTheSignedInPersonCanChangeThings(t *testing.T) {
 	r := setup(t, uint32(os.Getuid())+1)
 	if os.Getuid() == 0 {
@@ -386,7 +442,7 @@ func TestOnlyTheSignedInPersonCanChangeThings(t *testing.T) {
 	for _, call := range []struct {
 		m    string
 		args []any
-	}{{"StartPairing", nil}, {"RevokeScreen", []any{"x"}}, {"SetForm", []any{"tv"}}, {"DirectNetwork", nil}} {
+	}{{"StartPairing", nil}, {"AdmitScreen", []any{strings.Repeat("a", 32), "TV"}}, {"RevokeScreen", []any{"x"}}, {"SetForm", []any{"tv"}}, {"DirectNetwork", nil}} {
 		err := r.obj.Call(Iface+"."+call.m, 0, call.args...).Err
 		var de dbus.Error
 		if !errors.As(err, &de) || de.Name != errorPfx+"NotAllowed" {

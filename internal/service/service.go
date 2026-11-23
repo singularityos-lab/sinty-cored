@@ -2,12 +2,15 @@ package service
 
 import (
 	"bufio"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -157,6 +160,7 @@ func Export(conn *dbus.Conn, s *Service) error {
 	props, err := prop.Export(conn, Path, prop.Map{Iface: {
 		"Name":          {Value: s.cfg.Name, Emit: prop.EmitTrue},
 		"ID":            {Value: s.identity().ID(), Emit: prop.EmitTrue},
+		"PublicKey":     {Value: base64.StdEncoding.EncodeToString(s.identity().Public()), Emit: prop.EmitTrue},
 		"Identity":      {Value: s.kept, Emit: prop.EmitTrue},
 		"Screens":       {Value: []Screen{}, Emit: prop.EmitTrue},
 		"Pairing":       {Value: false, Emit: prop.EmitTrue},
@@ -285,6 +289,29 @@ func (o *object) CancelPairing(sender dbus.Sender) *dbus.Error {
 	}
 	o.s.closePairing()
 	return nil
+}
+
+func (o *object) AdmitScreen(sender dbus.Sender, id, name string) *dbus.Error {
+	s := o.s
+	if !s.allowed(sender) {
+		return dbusErr("NotAllowed", errNotAllowed)
+	}
+	if !validScreenID(id) || name == "" || len(name) > 64 {
+		return dbusErr("Failed", errors.New("not a screen id and name"))
+	}
+	if err := s.cfg.Trust.Add(id, name); err != nil {
+		return dbusErr("Failed", err)
+	}
+	s.refreshScreens()
+	return nil
+}
+
+func validScreenID(id string) bool {
+	if len(id) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(id)
+	return err == nil && strings.ToLower(id) == id
 }
 
 func (o *object) RevokeScreen(sender dbus.Sender, id string) *dbus.Error {

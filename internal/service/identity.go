@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/base64"
 	"errors"
 	"log"
 	"os"
@@ -94,6 +95,7 @@ func (s *Service) adopt(c vault.Contents) error {
 		}
 	}
 	s.set("ID", id.ID())
+	s.set("PublicKey", base64.StdEncoding.EncodeToString(id.Public()))
 	s.set("Identity", kept)
 	s.refreshScreens()
 	return nil

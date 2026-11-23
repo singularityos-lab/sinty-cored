@@ -49,6 +49,7 @@ allowed to root and to the person signed in on the Core.
 | Member | Signature | |
 |---|---|---|
 | `Name`, `ID` | property `s` | |
+| `PublicKey` | property `s` | The Core's Ed25519 public key, base64. |
 | `Screens` | property `a(ssb)` | Paired screens: id, name, connected. |
 | `Pairing`, `PairingScreen` | property `b`, `s` | |
 | `Route` | property `s` | `cable`, `network`, `direct` or `none`. |
@@ -60,6 +61,7 @@ allowed to root and to the person signed in on the Core.
 | `Identity` | property `s` | `tpm`, `file`, or `replaced` when the sealed key was lost and a backup should be restored. |
 | `StartPairing()` | out `s` | Opens the window for two minutes, returns the route. |
 | `ConfirmPairing(code)` / `CancelPairing()` | | |
+| `AdmitScreen(id, name)` | | Trusts a screen whose key came over another authenticated channel, such as a paired Nearby device. |
 | `RevokeScreen(id)` | | |
 | `SetUsbMode(mode)` / `SetForm(form)` | | |
 | `Backup(fd)` | in `h`, out `s` | Writes the backup to `fd`, returns the recovery code. |

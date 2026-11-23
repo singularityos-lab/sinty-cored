@@ -63,6 +63,21 @@ func (t *Terminal) Core() (pair.Peer, error) {
 
 func (t *Terminal) Forget() error { return os.Remove(t.corePath()) }
 
+func (t *Terminal) Adopt(core pair.Peer) error {
+	if len(core.Public) != ed25519.PublicKeySize || pair.ID(core.Public) != core.ID {
+		return errors.New("the Core key does not match its id")
+	}
+	data, _ := json.Marshal(paired{core.ID, core.Name, core.Public})
+	if err := os.MkdirAll(t.State, 0o700); err != nil {
+		return err
+	}
+	tmp := t.corePath() + ".new"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, t.corePath())
+}
+
 func (t *Terminal) message(lines ...string) {
 	if t.Display == nil {
 		return
