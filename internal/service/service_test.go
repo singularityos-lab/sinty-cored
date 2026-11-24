@@ -186,12 +186,16 @@ type rig struct {
 }
 
 func setup(t *testing.T, owner uint32) *rig {
+	return setupWith(t, owner, func(d *desktop) Desktop { return d })
+}
+
+func setupWith(t *testing.T, owner uint32, wrap func(*desktop) Desktop) *rig {
 	bus := bustest.Start(t)
 	server := bustest.Connect(t, bus)
 	r := &rig{t: t, tr: &trust{m: map[string]string{}}, pw: &power{form: "laptop"}, cd: &codecs{}}
 	r.dk = &desktop{owner: owner, sink: &sink{}, layout: make(chan string, 4)}
 	r.svc = New(Config{
-		Identity: identity(t), Name: "Desk Core", Trust: r.tr, Power: r.pw, Desktop: r.dk, Codecs: r.cd,
+		Identity: identity(t), Name: "Desk Core", Trust: r.tr, Power: r.pw, Desktop: wrap(r.dk), Codecs: r.cd,
 		LAN: func() bool { return true }, PairWindow: 5 * time.Second,
 	})
 	if err := Export(server, r.svc); err != nil {
