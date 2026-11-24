@@ -32,6 +32,8 @@ import (
 	"github.com/singularityos-lab/sinty-cored/internal/pasteboard"
 	"github.com/singularityos-lab/sinty-cored/internal/stream"
 	"github.com/singularityos-lab/sinty-cored/internal/wl"
+
+	"github.com/singularityos-lab/libsingularity/src/system/core/go/netkind"
 )
 
 const (
@@ -128,6 +130,8 @@ type Config struct {
 	Direct     Direct
 	Codecs     Codecs
 	LAN        func() bool
+	Admit      func(local net.Addr) bool
+	AdmitPeer  func(remote net.Addr) bool
 	PairWindow time.Duration
 	OnPresence func([]byte)
 }
@@ -162,8 +166,17 @@ func New(cfg Config) *Service {
 	if cfg.PairWindow == 0 {
 		cfg.PairWindow = 2 * time.Minute
 	}
+	if cfg.Admit == nil {
+		cfg.Admit = netkind.Admit(netkind.Dir, netkind.LinkOf)
+	}
+	if cfg.AdmitPeer == nil {
+		cfg.AdmitPeer = netkind.AdmitPeer(netkind.Dir, netkind.LinkTowards)
+	}
 	if cfg.LAN == nil {
-		cfg.LAN = func() bool { return link.OnLAN(link.System()) }
+		cfg.LAN = func() bool {
+			k, ok := netkind.Read(netkind.Dir)
+			return (!ok || k != netkind.Public) && link.OnLAN(link.System())
+		}
 	}
 	if cfg.Kept == "" {
 		cfg.Kept = IdentityFile
@@ -525,6 +538,10 @@ func (s *Service) Serve(l net.Listener) error {
 		if err != nil {
 			return err
 		}
+		if !s.cfg.Admit(c.LocalAddr()) {
+			c.Close()
+			continue
+		}
 		go s.handle(c)
 	}
 }
@@ -819,7 +836,7 @@ func (s *Service) Discovery(pc net.PacketConn, port int) error {
 		if err != nil {
 			return err
 		}
-		if string(buf[:n]) == Probe {
+		if string(buf[:n]) == Probe && s.cfg.AdmitPeer(from) {
 			reply, _ := json.Marshal(announce{s.cfg.Name, s.identity().ID(), port})
 			pc.WriteTo(reply, from)
 		}
