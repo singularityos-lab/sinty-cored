@@ -44,6 +44,7 @@ type Terminal struct {
 	Decoders func(format uint32, w, h int) (Decoder, error)
 
 	InputOnly bool
+	Pinned    *pair.Peer
 }
 
 type paired struct {
@@ -55,6 +56,9 @@ type paired struct {
 func (t *Terminal) corePath() string { return filepath.Join(t.State, "core.json") }
 
 func (t *Terminal) Core() (pair.Peer, error) {
+	if t.Pinned != nil {
+		return *t.Pinned, nil
+	}
 	data, err := os.ReadFile(t.corePath())
 	if err != nil {
 		return pair.Peer{}, ErrNotPaired

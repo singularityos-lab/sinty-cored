@@ -283,6 +283,15 @@ func (win *Window) seatEvent(op uint16, args []byte) {
 		return
 	}
 	caps := binary.LittleEndian.Uint32(args)
+	if caps&seatPointer == 0 && win.pointer != 0 {
+		delete(win.c.handlers, win.pointer)
+		win.pointer = 0
+	}
+	if caps&seatKeyboard == 0 && win.keyboard != 0 {
+		delete(win.c.handlers, win.keyboard)
+		win.keyboard = 0
+		clear(win.pressed)
+	}
 	if caps&seatPointer != 0 && win.pointer == 0 {
 		win.pointer = win.c.newID(win.pointerEvent)
 		win.c.send(win.seat, 0, u32(win.pointer))

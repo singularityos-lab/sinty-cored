@@ -431,6 +431,11 @@ func (c *Client) Capture(cursor, onDamage bool, into []byte) (*Frame, error) {
 	if failed {
 		return nil, ErrFailed
 	}
+	c.take(&fr, into)
+	return &fr, nil
+}
+
+func (c *Client) take(fr *Frame, into []byte) {
 	size := fr.Stride * fr.H
 	if cap(into) >= size {
 		fr.Pix = into[:size]
@@ -451,7 +456,6 @@ func (c *Client) Capture(cursor, onDamage bool, into []byte) (*Frame, error) {
 			fr.Format = FormatXRGB8888
 		}
 	}
-	return &fr, nil
 }
 
 const keymap = `xkb_keymap {

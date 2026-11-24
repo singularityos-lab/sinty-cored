@@ -131,6 +131,14 @@ func main() {
 	coreName := flag.String("core-name", "", "name of the Core given with -core-id")
 	coreKey := flag.String("core-key", "", "base64 public key of the Core given with -core-id")
 	edges := flag.Bool("edges", false, "hand this desktop's pointer and keyboard to the Cores placed beside its outputs, driven by commands on standard input")
+	castServe := flag.Bool("cast-serve", false, "show one window of this desktop on another device, which is named on standard input")
+	castShow := flag.Bool("cast-show", false, "show in a window a window cast from another device")
+	castApp := flag.String("app", "", "with -cast-serve, the app id of the window to cast; with -cast-show, the app id of the window shown")
+	castPID := flag.Int("pid", 0, "with -cast-serve, the process of the window to cast, any when zero")
+	castListen := flag.String("listen", ":0", "with -cast-serve, where to wait for the other device")
+	castTitle := flag.String("title", "", "with -cast-show, the title of the window")
+	castSize := flag.String("window-size", "", "with -cast-show, the size of the window, as WIDTHxHEIGHT")
+	castKey := flag.String("cast-key", "", "with -cast-show, base64 public key of the device that casts")
 	flag.Parse()
 	log.SetFlags(0)
 	log.SetPrefix("sinty-screen: ")
@@ -140,6 +148,12 @@ func main() {
 	if *edges {
 		serveEdges(*name, *layout, os.Stdin, os.Stdout)
 		return
+	}
+	if *castServe {
+		os.Exit(serveCast(*castApp, *castPID, *castListen, os.Stdin, os.Stdout))
+	}
+	if *castShow {
+		os.Exit(showCast(*core, *castKey, *castTitle, *castApp, *castSize, *layout, os.Stdout))
 	}
 	store := vault.Store{Dir: *state, TPM: vault.NewHelper(filepath.Join(*state, "tpm"))}
 	id, _, err := store.Load()
