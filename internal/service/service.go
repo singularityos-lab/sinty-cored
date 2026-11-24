@@ -31,6 +31,7 @@ import (
 	"github.com/singularityos-lab/sinty-cored/internal/pair"
 	"github.com/singularityos-lab/sinty-cored/internal/pasteboard"
 	"github.com/singularityos-lab/sinty-cored/internal/stream"
+	"github.com/singularityos-lab/sinty-cored/internal/wl"
 )
 
 const (
@@ -82,6 +83,10 @@ type Clipboard interface {
 
 type ClipboardDesktop interface {
 	Clipboard() (Clipboard, error)
+}
+
+type DragDesktop interface {
+	Drags() (*wl.Share, error)
 }
 
 type USB interface {
@@ -642,6 +647,15 @@ func (s *Service) session(rw rwc) {
 				l := pasteboard.New(k, conn.Send, dir, owner)
 				opts.OnMessage = l.Receive
 				go shareClipboard(k, l)
+				if dd, ok := s.cfg.Desktop.(DragDesktop); ok {
+					if sh, err := dd.Drags(); err == nil && sh.CanDrag() {
+						defer sh.Close()
+						go sh.Run()
+						defer carryDrags(sh, l)()
+					} else if err == nil {
+						sh.Close()
+					}
+				}
 			} else {
 				log.Printf("clipboard not shared: %v", err)
 			}
@@ -704,6 +718,68 @@ func shareClipboard(k Clipboard, l *pasteboard.Link) {
 			}
 		case <-k.Done():
 			return
+		}
+	}
+}
+
+func carryDrags(sh *wl.Share, l *pasteboard.Link) func() {
+	var mu sync.Mutex
+	var current *wl.Drag
+	take := func() *wl.Drag {
+		mu.Lock()
+		defer mu.Unlock()
+		d := current
+		current = nil
+		return d
+	}
+	l.OnDrag = func(items []clip.Item, provide func(mime string, data []byte) []byte) {
+		if d := take(); d != nil {
+			d.Cancel()
+			d.Close()
+		}
+		d, err := sh.StartDrag(items, provide)
+		if err != nil {
+			log.Printf("drag not started: %v", err)
+			l.DragDone(false)
+			return
+		}
+		mu.Lock()
+		current = d
+		mu.Unlock()
+		go func() {
+			dropped := <-d.Outcome()
+			mu.Lock()
+			mine := current == d
+			if mine {
+				current = nil
+			}
+			mu.Unlock()
+			d.Close()
+			if mine {
+				l.DragDone(dropped)
+			}
+		}()
+	}
+	l.OnDragLeave = func() {
+		if d := take(); d != nil {
+			d.Cancel()
+			l.GiveBack(nil)
+			return
+		}
+		o, err := sh.CurrentDrag()
+		if err != nil || o == nil {
+			l.GiveBack(nil)
+			return
+		}
+		items := o.Read()
+		o.Finish(false)
+		o.Close()
+		l.GiveBack(items)
+	}
+	return func() {
+		if d := take(); d != nil {
+			d.Cancel()
+			d.Close()
 		}
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/singularityos-lab/sinty-cored/internal/clip"
 	"github.com/singularityos-lab/sinty-cored/internal/input"
 	"github.com/singularityos-lab/sinty-cored/internal/pasteboard"
 	"github.com/singularityos-lab/sinty-cored/internal/share"
@@ -24,6 +25,8 @@ import (
 const (
 	resistDistance = 260
 	resistAgain    = 10 * time.Minute
+	buttonLeft     = 0x110
+	backWait       = time.Second
 )
 
 var sides = map[string]wl.Side{"left": wl.SideLeft, "right": wl.SideRight, "top": wl.SideTop, "bottom": wl.SideBottom}
@@ -71,6 +74,11 @@ type placed struct {
 	reportedProgress float64
 	sentClip         int
 	link             *pasteboard.Link
+	dragOffer        *wl.DragOffer
+	released         bool
+	backPending      bool
+	backEdge         uint32
+	backPos          float64
 }
 
 type edges struct {
@@ -86,6 +94,7 @@ type edges struct {
 	gen     int
 	clip    *wl.Clipboard
 	clipGen int
+	do      chan func()
 }
 
 func serveEdges(name, layout string, in io.Reader, out io.Writer) {
@@ -96,6 +105,7 @@ func serveEdges(name, layout string, in io.Reader, out io.Writer) {
 		devices: map[string]*placed{},
 		byEdge:  map[uint32]*placed{},
 		status:  make(chan status, 16),
+		do:      make(chan func(), 16),
 	}
 	sh, err := wl.OpenShare(wl.SocketPath())
 	if err != nil {
@@ -159,6 +169,8 @@ func serveEdges(name, layout string, in io.Reader, out io.Writer) {
 			e.handle(b)
 		case st := <-e.status:
 			e.connected(st)
+		case f := <-e.do:
+			f()
 		case <-clipChanged:
 			e.clipGen++
 			if e.active != nil {
@@ -215,7 +227,7 @@ func (e *edges) command(c command) {
 		}
 		p.term = &terminal.Terminal{Identity: id, Name: e.name, Layout: e.layout, State: p.state, InputOnly: true}
 		e.devices[p.id] = p
-		go keepConnected(p.term, p.id, p.gen, p.core, p.stop, e.status, e.clip)
+		go keepConnected(p.term, p.id, p.gen, p.core, p.stop, e.status, e.clip, e.dragHooks(p))
 	case "forget":
 		e.forget(c.ID)
 	case "probe":
@@ -237,6 +249,7 @@ func (e *edges) forget(id string) {
 	}
 	delete(e.devices, id)
 	close(p.stop)
+	e.dropDrag(p)
 	e.unbind(p)
 	if p.sess != nil {
 		p.sess.Close()
@@ -267,6 +280,7 @@ func (e *edges) connected(st status) {
 	}
 	switch {
 	case st.err != nil:
+		e.dropDrag(p)
 		e.unbind(p)
 		p.sess, p.link = nil, nil
 		e.emit(map[string]any{"event": "disconnected", "id": p.id, "error": st.err.Error()})
@@ -318,6 +332,113 @@ func (e *edges) shareClip(p *placed) {
 	}()
 }
 
+func (e *edges) post(f func()) {
+	e.do <- f
+}
+
+func (e *edges) dragHooks(p *placed) func(l *pasteboard.Link) {
+	gen := p.gen
+	return func(l *pasteboard.Link) {
+		l.OnDragDone = func(dropped bool) {
+			e.post(func() {
+				if p.gen == gen {
+					e.finishDrag(p, dropped)
+				}
+			})
+		}
+		l.OnDragBack = func(items []clip.Item, provide func(mime string, data []byte) []byte) {
+			e.post(func() {
+				if p.gen == gen && p.backPending {
+					e.comeBack(p, items, provide)
+				}
+			})
+		}
+	}
+}
+
+func (e *edges) carryDrag(p *placed) {
+	if p.link == nil || !e.sh.CanDrag() {
+		return
+	}
+	sh, l := e.sh, p.link
+	go func() {
+		o, err := sh.CurrentDrag()
+		if err != nil || o == nil {
+			return
+		}
+		items := o.Read()
+		e.post(func() {
+			switch {
+			case e.active != p || p.link != l || len(items) == 0:
+				o.Close()
+			case p.released:
+				o.Finish(false)
+				o.Close()
+			default:
+				e.dropDrag(p)
+				p.dragOffer = o
+				p.ptr.Assume(buttonLeft)
+				if err := l.OfferDrag(items); err != nil {
+					log.Printf("%s: drag: %v", p.id, err)
+				}
+			}
+		})
+	}()
+}
+
+func (e *edges) finishDrag(p *placed, dropped bool) {
+	if p.dragOffer == nil {
+		return
+	}
+	p.dragOffer.Finish(dropped)
+	e.dropDrag(p)
+}
+
+func (e *edges) dropDrag(p *placed) {
+	if p.dragOffer != nil {
+		p.dragOffer.Close()
+		p.dragOffer = nil
+	}
+	p.backPending = false
+}
+
+func (e *edges) leave(p *placed, edge uint32, position float64, waitBack bool) {
+	if p.dragOffer != nil {
+		p.dragOffer.Close()
+		p.dragOffer = nil
+	}
+	if !waitBack {
+		e.sh.Release(edge, position)
+		return
+	}
+	p.backPending, p.backEdge, p.backPos = true, edge, position
+	gen := p.gen
+	time.AfterFunc(backWait, func() {
+		e.post(func() {
+			if p.gen == gen && p.backPending {
+				e.comeBack(p, nil, nil)
+			}
+		})
+	})
+}
+
+func (e *edges) comeBack(p *placed, items []clip.Item, provide func(mime string, data []byte) []byte) {
+	p.backPending = false
+	e.sh.Release(p.backEdge, p.backPos)
+	if len(items) == 0 || p.released {
+		return
+	}
+	d, err := e.sh.StartDrag(items, provide)
+	if err != nil {
+		log.Printf("%s: drag: %v", p.id, err)
+		return
+	}
+	go func() {
+		<-d.Outcome()
+		d.Close()
+	}()
+}
+
 func (e *edges) approach(p *placed, fraction, progress float64) {
 	if progress > 0 && progress < 1 && progress-p.reportedProgress < 0.02 && progress > p.reportedProgress {
 		return
@@ -357,15 +478,25 @@ func (e *edges) handle(batch []wl.EdgeEvent) {
 			p.ptr.W, p.ptr.H = float64(p.w), float64(p.h)
 			e.active = p
 			e.send(p, p.ptr.Enter(ev.Y))
+			p.released = false
 			e.shareClip(p)
+			e.carryDrag(p)
 			e.emit(map[string]any{"event": "entered", "id": p.id})
 		case wl.EdgeMotion:
+			held := p.ptr.Held(buttonLeft)
 			events, back, position := p.ptr.Move(ev.X, ev.Y)
+			dragging := p.link != nil && e.sh.CanDrag() && (held || p.dragOffer != nil)
+			if back && dragging {
+				p.link.LeaveDrag()
+			}
 			e.send(p, events)
 			if back {
-				e.sh.Release(ev.Edge, position)
+				e.leave(p, ev.Edge, position, dragging && p.dragOffer == nil)
 			}
 		case wl.EdgeButton:
+			if ev.Code == buttonLeft && !ev.Pressed {
+				p.released = true
+			}
 			e.send(p, p.ptr.Button(ev.Code, ev.Pressed))
 		case wl.EdgeKey:
 			e.send(p, p.ptr.Key(ev.Code, ev.Pressed))
@@ -379,6 +510,10 @@ func (e *edges) handle(batch []wl.EdgeEvent) {
 		case wl.WindowDropped:
 			e.emit(map[string]any{"event": "window", "id": p.id, "state": "dropped"})
 		case wl.EdgeLeft:
+			if p.dragOffer != nil && p.link != nil {
+				p.link.LeaveDrag()
+			}
+			e.dropDrag(p)
 			e.send(p, p.ptr.Leave())
 			p.lastCross = time.Now()
 			if e.active == p {
@@ -401,9 +536,9 @@ func (e *edges) shutdown() {
 	}
 }
 
-func keepConnected(term *terminal.Terminal, id string, gen int, core string, stop <-chan struct{}, out chan<- status, board *wl.Clipboard) {
+func keepConnected(term *terminal.Terminal, id string, gen int, core string, stop <-chan struct{}, out chan<- status, board *wl.Clipboard, hooks func(*pasteboard.Link)) {
 	for {
-		err := connectEdge(term, id, gen, core, stop, out, board)
+		err := connectEdge(term, id, gen, core, stop, out, board, hooks)
 		select {
 		case <-stop:
 			return
@@ -425,7 +560,7 @@ func keepConnected(term *terminal.Terminal, id string, gen int, core string, sto
 	}
 }
 
-func connectEdge(term *terminal.Terminal, id string, gen int, core string, stop <-chan struct{}, out chan<- status, board *wl.Clipboard) error {
+func connectEdge(term *terminal.Terminal, id string, gen int, core string, stop <-chan struct{}, out chan<- status, board *wl.Clipboard, hooks func(*pasteboard.Link)) error {
 	paired, err := term.Core()
 	if err != nil {
 		return err
@@ -455,6 +590,9 @@ func connectEdge(term *terminal.Terminal, id string, gen int, core string, stop 
 	var other func(kind byte, data []byte)
 	if board != nil {
 		link = pasteboard.New(board, sess.SendMessage, receivedDir(), nil)
+		if hooks != nil {
+			hooks(link)
+		}
 		other = link.Receive
 	}
 	select {

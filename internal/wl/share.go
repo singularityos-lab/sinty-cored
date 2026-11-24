@@ -77,6 +77,7 @@ type Share struct {
 	c       *Client
 	mu      sync.Mutex
 	manager uint32
+	version uint32
 	outputs []*Output
 
 	qmu   sync.Mutex
@@ -91,10 +92,16 @@ func OpenShare(socket string) (*Share, error) {
 	}
 	s := &Share{c: c, wake: make(chan struct{}, 1)}
 	c.guard = &s.mu
-	s.manager = c.bind("zsingularity_input_share_manager_v1", 2)
+	if g, ok := c.globals["zsingularity_input_share_manager_v1"]; ok {
+		s.version = min(g.version, 4)
+		s.manager = c.bindGlobal(g, "zsingularity_input_share_manager_v1", 4)
+	}
 	if s.manager == 0 {
 		c.conn.Close()
 		return nil, ErrNoShare
+	}
+	if s.version >= 4 {
+		c.bind("wl_seat", 1)
 	}
 	for _, g := range c.outputs {
 		o := &Output{Scale: 1}

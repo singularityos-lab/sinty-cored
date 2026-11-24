@@ -249,6 +249,14 @@ func (w *Wayland) Clipboard() (Clipboard, error) {
 	return k, nil
 }
 
+func (w *Wayland) Drags() (*wl.Share, error) {
+	path, _, ok := w.socket()
+	if !ok {
+		return nil, errNoDesktop
+	}
+	return wl.OpenShare(path)
+}
+
 type GadgetUSB struct {
 	G         *gadget.Gadget
 	Disk      string

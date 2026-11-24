@@ -255,8 +255,8 @@ func (s *Session) Wait(resized func(w, h int), other func(kind byte, data []byte
 			if w, h, ok := stream.ParseSize(data); ok && resized != nil {
 				resized(w, h)
 			}
-		case stream.Clip, stream.FileAsk, stream.FileData:
-			if other != nil {
+		default:
+			if stream.Carried(kind) && other != nil {
 				other(kind, data)
 			}
 		}

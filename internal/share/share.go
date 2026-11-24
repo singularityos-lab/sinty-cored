@@ -112,6 +112,14 @@ func (p *Pointer) Axis(axis uint32, value float64, discrete int32) []input.Event
 	return []input.Event{{Kind: input.Wheel, Code: axis, Value: steps}}
 }
 
+func (p *Pointer) Held(code uint32) bool { return p.buttons[code] }
+
+func (p *Pointer) Assume(code uint32) {
+	if p.active {
+		p.buttons[code] = true
+	}
+}
+
 func (p *Pointer) Leave() []input.Event {
 	if !p.active {
 		return nil

@@ -21,7 +21,13 @@ const (
 	Clip
 	FileAsk
 	FileData
+	Drag
+	DragDone
+	DragLeave
+	DragBack
 )
+
+func Carried(kind byte) bool { return kind >= Clip && kind <= DragBack }
 
 const (
 	FeatureShown = "shown"
@@ -156,7 +162,7 @@ func Serve(c *channel.Conn, src Source, sink Sink, hw Hardware, opts Options, st
 				refund()
 				continue
 			}
-			if kind == Clip || kind == FileAsk || kind == FileData {
+			if Carried(kind) {
 				if opts.OnMessage != nil {
 					opts.OnMessage(kind, data)
 				}
