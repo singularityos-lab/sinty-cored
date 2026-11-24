@@ -221,6 +221,8 @@ func (t *Terminal) Show(s *Session) error {
 
 func (s *Session) Close() error { return s.c.Close() }
 
+func (s *Session) SendMessage(kind byte, data []byte) error { return s.c.Send(kind, data) }
+
 func (s *Session) Size() (int, int, error) {
 	for {
 		kind, data, err := s.c.Recv()
@@ -240,7 +242,7 @@ func (s *Session) Size() (int, int, error) {
 	}
 }
 
-func (s *Session) Wait(resized func(w, h int)) error {
+func (s *Session) Wait(resized func(w, h int), other func(kind byte, data []byte)) error {
 	for {
 		kind, data, err := s.c.Recv()
 		if err != nil {
@@ -252,6 +254,10 @@ func (s *Session) Wait(resized func(w, h int)) error {
 		case stream.Size:
 			if w, h, ok := stream.ParseSize(data); ok && resized != nil {
 				resized(w, h)
+			}
+		case stream.Clip, stream.FileAsk, stream.FileData:
+			if other != nil {
+				other(kind, data)
 			}
 		}
 	}

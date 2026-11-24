@@ -35,6 +35,7 @@ type Client struct {
 	err      error
 	start    time.Time
 	pending  []byte
+	fds      []int
 
 	registry, shm, seat, output, copier, pointers, keyboards uint32
 	pointer, keyboard                                        uint32
@@ -243,9 +244,7 @@ func (c *Client) dispatch(deadline time.Time) error {
 		msgs, _ := syscall.ParseSocketControlMessage(oob[:oobn])
 		for _, m := range msgs {
 			if fds, err := syscall.ParseUnixRights(&m); err == nil {
-				for _, fd := range fds {
-					syscall.Close(fd)
-				}
+				c.fds = append(c.fds, fds...)
 			}
 		}
 	}
@@ -270,7 +269,22 @@ func (c *Client) dispatch(deadline time.Time) error {
 		data = data[size:]
 	}
 	c.pending = append(c.pending[:0], data...)
+	if len(c.pending) == 0 {
+		for _, fd := range c.fds {
+			syscall.Close(fd)
+		}
+		c.fds = c.fds[:0]
+	}
 	return c.err
+}
+
+func (c *Client) takeFD() int {
+	if len(c.fds) == 0 {
+		return -1
+	}
+	fd := c.fds[0]
+	c.fds = c.fds[1:]
+	return fd
 }
 
 func (c *Client) roundtrip() error {

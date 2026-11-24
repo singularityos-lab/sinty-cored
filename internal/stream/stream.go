@@ -18,6 +18,9 @@ const (
 	Coded
 	Shown
 	Size
+	Clip
+	FileAsk
+	FileData
 )
 
 const (
@@ -31,6 +34,7 @@ type Options struct {
 	Parts      int
 	InputOnly  bool
 	OnApproach func(side uint32, position, progress float64)
+	OnMessage  func(kind byte, data []byte)
 }
 
 func approaches(events []input.Event, on func(side uint32, position, progress float64)) []input.Event {
@@ -150,6 +154,12 @@ func Serve(c *channel.Conn, src Source, sink Sink, hw Hardware, opts Options, st
 			}
 			if kind == Shown {
 				refund()
+				continue
+			}
+			if kind == Clip || kind == FileAsk || kind == FileData {
+				if opts.OnMessage != nil {
+					opts.OnMessage(kind, data)
+				}
 				continue
 			}
 			if kind != Input || sink == nil {

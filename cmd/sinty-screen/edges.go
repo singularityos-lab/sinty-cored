@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/singularityos-lab/sinty-cored/internal/input"
+	"github.com/singularityos-lab/sinty-cored/internal/pasteboard"
 	"github.com/singularityos-lab/sinty-cored/internal/share"
 	"github.com/singularityos-lab/sinty-cored/internal/terminal"
 	"github.com/singularityos-lab/sinty-cored/internal/vault"
@@ -46,6 +47,7 @@ type command struct {
 type status struct {
 	id   string
 	gen  int
+	link *pasteboard.Link
 	sess *terminal.Session
 	w, h int
 	err  error
@@ -67,6 +69,8 @@ type placed struct {
 	pressing         bool
 	term             *terminal.Terminal
 	reportedProgress float64
+	sentClip         int
+	link             *pasteboard.Link
 }
 
 type edges struct {
@@ -80,6 +84,8 @@ type edges struct {
 	probe   uint32
 	status  chan status
 	gen     int
+	clip    *wl.Clipboard
+	clipGen int
 }
 
 func serveEdges(name, layout string, in io.Reader, out io.Writer) {
@@ -99,6 +105,14 @@ func serveEdges(name, layout string, in io.Reader, out io.Writer) {
 	e.sh = sh
 	defer sh.Close()
 	e.emitOutputs()
+	var clipChanged <-chan struct{}
+	if k, err := wl.OpenClipboard(wl.SocketPath()); err == nil {
+		e.clip = k
+		defer k.Close()
+		clipChanged = k.Changed()
+	} else {
+		log.Printf("clipboard not shared: %v", err)
+	}
 
 	commands := make(chan command)
 	go func() {
@@ -145,6 +159,11 @@ func serveEdges(name, layout string, in io.Reader, out io.Writer) {
 			e.handle(b)
 		case st := <-e.status:
 			e.connected(st)
+		case <-clipChanged:
+			e.clipGen++
+			if e.active != nil {
+				e.shareClip(e.active)
+			}
 		case <-tick.C:
 			e.rearm(time.Now())
 		case err := <-died:
@@ -196,7 +215,7 @@ func (e *edges) command(c command) {
 		}
 		p.term = &terminal.Terminal{Identity: id, Name: e.name, Layout: e.layout, State: p.state, InputOnly: true}
 		e.devices[p.id] = p
-		go keepConnected(p.term, p.id, p.gen, p.core, p.stop, e.status)
+		go keepConnected(p.term, p.id, p.gen, p.core, p.stop, e.status, e.clip)
 	case "forget":
 		e.forget(c.ID)
 	case "probe":
@@ -249,7 +268,7 @@ func (e *edges) connected(st status) {
 	switch {
 	case st.err != nil:
 		e.unbind(p)
-		p.sess = nil
+		p.sess, p.link = nil, nil
 		e.emit(map[string]any{"event": "disconnected", "id": p.id, "error": st.err.Error()})
 	case p.sess == st.sess && p.sess != nil:
 		p.w, p.h = st.w, st.h
@@ -257,7 +276,8 @@ func (e *edges) connected(st status) {
 			p.ptr.Resize(float64(p.w), float64(p.h))
 		}
 	default:
-		p.sess, p.w, p.h = st.sess, st.w, st.h
+		p.sess, p.w, p.h, p.link = st.sess, st.w, st.h, st.link
+		p.sentClip = -1
 		p.ptr = &share.Pointer{Side: p.side, Length: float64(p.end - p.start)}
 		p.edge = e.sh.Edge(p.output, p.side, p.start, p.end)
 		e.byEdge[p.edge] = p
@@ -283,6 +303,19 @@ func (e *edges) send(p *placed, events []input.Event) {
 	if err := p.sess.Send(events); err != nil {
 		log.Printf("%s: %v", p.id, err)
 	}
+}
+
+func (e *edges) shareClip(p *placed) {
+	if p.link == nil || p.sentClip == e.clipGen {
+		return
+	}
+	p.sentClip = e.clipGen
+	l, id := p.link, p.id
+	go func() {
+		if err := l.ShareCurrent(); err != nil {
+			log.Printf("%s: clipboard: %v", id, err)
+		}
+	}()
 }
 
 func (e *edges) approach(p *placed, fraction, progress float64) {
@@ -324,6 +357,7 @@ func (e *edges) handle(batch []wl.EdgeEvent) {
 			p.ptr.W, p.ptr.H = float64(p.w), float64(p.h)
 			e.active = p
 			e.send(p, p.ptr.Enter(ev.Y))
+			e.shareClip(p)
 			e.emit(map[string]any{"event": "entered", "id": p.id})
 		case wl.EdgeMotion:
 			events, back, position := p.ptr.Move(ev.X, ev.Y)
@@ -367,9 +401,9 @@ func (e *edges) shutdown() {
 	}
 }
 
-func keepConnected(term *terminal.Terminal, id string, gen int, core string, stop <-chan struct{}, out chan<- status) {
+func keepConnected(term *terminal.Terminal, id string, gen int, core string, stop <-chan struct{}, out chan<- status, board *wl.Clipboard) {
 	for {
-		err := connectEdge(term, id, gen, core, stop, out)
+		err := connectEdge(term, id, gen, core, stop, out, board)
 		select {
 		case <-stop:
 			return
@@ -391,7 +425,7 @@ func keepConnected(term *terminal.Terminal, id string, gen int, core string, sto
 	}
 }
 
-func connectEdge(term *terminal.Terminal, id string, gen int, core string, stop <-chan struct{}, out chan<- status) error {
+func connectEdge(term *terminal.Terminal, id string, gen int, core string, stop <-chan struct{}, out chan<- status, board *wl.Clipboard) error {
 	paired, err := term.Core()
 	if err != nil {
 		return err
@@ -417,8 +451,14 @@ func connectEdge(term *terminal.Terminal, id string, gen int, core string, stop 
 	if err != nil {
 		return err
 	}
+	var link *pasteboard.Link
+	var other func(kind byte, data []byte)
+	if board != nil {
+		link = pasteboard.New(board, sess.SendMessage, receivedDir(), nil)
+		other = link.Receive
+	}
 	select {
-	case out <- status{id: id, gen: gen, sess: sess, w: w, h: h}:
+	case out <- status{id: id, gen: gen, sess: sess, link: link, w: w, h: h}:
 	case <-stop:
 		return nil
 	}
@@ -433,8 +473,15 @@ func connectEdge(term *terminal.Terminal, id string, gen int, core string, stop 
 	defer close(done)
 	return sess.Wait(func(w, h int) {
 		select {
-		case out <- status{id: id, gen: gen, sess: sess, w: w, h: h}:
+		case out <- status{id: id, gen: gen, sess: sess, link: link, w: w, h: h}:
 		case <-stop:
 		}
-	})
+	}, other)
+}
+
+func receivedDir() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(dir, "sinty-nearby", "received")
+	}
+	return filepath.Join(os.TempDir(), "sinty-nearby")
 }

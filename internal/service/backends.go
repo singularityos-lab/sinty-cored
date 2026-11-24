@@ -237,6 +237,18 @@ func (w *Wayland) Open(layout string) (stream.Source, stream.Sink, func(), error
 	return c, c, func() { c.Close() }, nil
 }
 
+func (w *Wayland) Clipboard() (Clipboard, error) {
+	path, _, ok := w.socket()
+	if !ok {
+		return nil, errNoDesktop
+	}
+	k, err := wl.OpenClipboard(path)
+	if err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
 type GadgetUSB struct {
 	G         *gadget.Gadget
 	Disk      string

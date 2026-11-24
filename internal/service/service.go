@@ -9,9 +9,13 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"os/user"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,9 +25,11 @@ import (
 	"github.com/godbus/dbus/v5/prop"
 
 	"github.com/singularityos-lab/sinty-cored/internal/channel"
+	"github.com/singularityos-lab/sinty-cored/internal/clip"
 	"github.com/singularityos-lab/sinty-cored/internal/link"
 	"github.com/singularityos-lab/sinty-cored/internal/p2p"
 	"github.com/singularityos-lab/sinty-cored/internal/pair"
+	"github.com/singularityos-lab/sinty-cored/internal/pasteboard"
 	"github.com/singularityos-lab/sinty-cored/internal/stream"
 )
 
@@ -64,6 +70,18 @@ type Power interface {
 type Desktop interface {
 	Open(layout string) (stream.Source, stream.Sink, func(), error)
 	Owner() (uint32, bool)
+}
+
+type Clipboard interface {
+	Changed() <-chan struct{}
+	Done() <-chan struct{}
+	Read() ([]clip.Item, error)
+	SetWith(items []clip.Item, provide func(mime string, data []byte) []byte)
+	Close() error
+}
+
+type ClipboardDesktop interface {
+	Clipboard() (Clipboard, error)
 }
 
 type USB interface {
@@ -616,6 +634,19 @@ func (s *Service) session(rw rwc) {
 			s.emit("Approach", name, sideNames[side], position, progress)
 		}
 	}
+	if opts.InputOnly {
+		if cd, ok := s.cfg.Desktop.(ClipboardDesktop); ok {
+			if k, err := cd.Clipboard(); err == nil {
+				defer k.Close()
+				dir, owner := s.receivedDir()
+				l := pasteboard.New(k, conn.Send, dir, owner)
+				opts.OnMessage = l.Receive
+				go shareClipboard(k, l)
+			} else {
+				log.Printf("clipboard not shared: %v", err)
+			}
+		}
+	}
 	var hw stream.Hardware
 	device := ""
 	if s.cfg.Codecs != nil && !opts.InputOnly {
@@ -662,6 +693,34 @@ func (s *Service) session(rw rwc) {
 		}
 	}
 	s.refreshScreens()
+}
+
+func shareClipboard(k Clipboard, l *pasteboard.Link) {
+	for {
+		select {
+		case <-k.Changed():
+			if err := l.ShareCurrent(); err != nil {
+				return
+			}
+		case <-k.Done():
+			return
+		}
+	}
+}
+
+func (s *Service) receivedDir() (string, func(string) error) {
+	uid, ok := s.cfg.Desktop.Owner()
+	if !ok {
+		return filepath.Join(os.TempDir(), "sinty-nearby"), nil
+	}
+	u, err := user.LookupId(strconv.Itoa(int(uid)))
+	if err != nil {
+		return filepath.Join(os.TempDir(), "sinty-nearby"), nil
+	}
+	gid, _ := strconv.Atoi(u.Gid)
+	return filepath.Join(u.HomeDir, ".cache", "sinty-nearby", "received"), func(path string) error {
+		return os.Lchown(path, int(uid), gid)
+	}
 }
 
 func (s *Service) encoderKind() string {

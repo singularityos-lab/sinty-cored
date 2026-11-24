@@ -495,7 +495,7 @@ func TestInputOnlySessionSendsSizeAndApproaches(t *testing.T) {
 		t.Fatal("the approach never reached the Core")
 	}
 	resized := make(chan [2]int, 1)
-	go sess.Wait(func(w, h int) { resized <- [2]int{w, h} })
+	go sess.Wait(func(w, h int) { resized <- [2]int{w, h} }, nil)
 	src.resize(1280, 720)
 	select {
 	case r := <-resized:
@@ -510,6 +510,63 @@ func TestInputOnlySessionSendsSizeAndApproaches(t *testing.T) {
 	k.mu.Unlock()
 	if !moved {
 		t.Fatalf("the motion after the approach was lost: %v", k.events)
+	}
+	close(stop)
+	c.Close()
+	<-served
+}
+
+func TestInputOnlySessionCarriesTheClipboard(t *testing.T) {
+	core, me := identity(t), identity(t)
+	c, d := net.Pipe()
+	stop := make(chan struct{})
+	served := make(chan error, 1)
+	atCore := make(chan []byte, 1)
+	coreConn := make(chan *channel.Conn, 1)
+	go func() {
+		cc, _, err := channel.Core(d, core, func(id string) (string, bool) { return "Laptop", true })
+		if err != nil {
+			served <- err
+			return
+		}
+		coreConn <- cc
+		opts := stream.Options{InputOnly: true, OnMessage: func(kind byte, data []byte) { atCore <- data }}
+		served <- stream.Serve(cc, &sizedSource{w: 800, h: 600}, &sink{}, nil, opts, stop)
+	}()
+	term := &Terminal{Identity: me, State: t.TempDir(), InputOnly: true}
+	if err := term.Adopt(pair.Peer{ID: core.ID(), Name: "Desk", Public: core.Public()}); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := term.Open(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := sess.Size(); err != nil {
+		t.Fatal(err)
+	}
+	atScreen := make(chan []byte, 1)
+	go sess.Wait(nil, func(kind byte, data []byte) { atScreen <- data })
+	if err := sess.SendMessage(stream.Clip, []byte("from the laptop")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-atCore:
+		if string(got) != "from the laptop" {
+			t.Fatalf("core got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the clipboard never reached the Core")
+	}
+	if err := (<-coreConn).Send(stream.Clip, []byte("from the core")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-atScreen:
+		if string(got) != "from the core" {
+			t.Fatalf("screen got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the clipboard never came back")
 	}
 	close(stop)
 	c.Close()
