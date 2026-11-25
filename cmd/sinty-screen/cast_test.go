@@ -211,3 +211,27 @@ func TestCastAcrossDevices(t *testing.T) {
 	}
 	toServe.Close()
 }
+
+func TestCastListensInsideARange(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	port := busy.Addr().(*net.TCPAddr).Port
+	l, err := listenIn(fmt.Sprintf("127.0.0.1:%d-%d", port, port+3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	got := l.Addr().(*net.TCPAddr).Port
+	if got <= port || got > port+3 {
+		t.Fatalf("listened on %d, outside %d-%d or on the busy port", got, port, port+3)
+	}
+	if _, err := listenIn(fmt.Sprintf("127.0.0.1:%d-%d", port, port)); err == nil {
+		t.Fatal("a range with only a busy port was accepted")
+	}
+	if _, err := listenIn("127.0.0.1:9-1"); err == nil {
+		t.Fatal("a reversed range was accepted")
+	}
+}

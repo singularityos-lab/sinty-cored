@@ -12,6 +12,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -63,7 +65,7 @@ func serveCast(app string, pid int, listen string, in io.Reader, w io.Writer) in
 		return ended(out, err)
 	}
 	defer cast.Close()
-	l, err := net.Listen("tcp", listen)
+	l, err := listenIn(listen)
 	if err != nil {
 		return ended(out, err)
 	}
@@ -201,4 +203,29 @@ func showCast(addr, key, title, app, size, layout string, w io.Writer) int {
 	case err := <-done:
 		return ended(out, err)
 	}
+}
+
+// listenIn listens on addr, whose port may be a FIRST-LAST range: the first
+// free port of the range is taken, so a firewall can open the range ahead.
+func listenIn(addr string) (net.Listener, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	first, last, isRange := strings.Cut(port, "-")
+	if !isRange {
+		return net.Listen("tcp", addr)
+	}
+	a, err1 := strconv.Atoi(first)
+	b, err2 := strconv.Atoi(last)
+	if err1 != nil || err2 != nil || a < 1 || b > 65535 || b < a {
+		return nil, fmt.Errorf("%s: not a port range", addr)
+	}
+	for p := a; p <= b; p++ {
+		l, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(p)))
+		if err == nil {
+			return l, nil
+		}
+	}
+	return nil, fmt.Errorf("no free port in %s", addr)
 }

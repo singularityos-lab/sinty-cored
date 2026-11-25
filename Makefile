@@ -29,6 +29,7 @@ install: static
 	install -Dm644 packaging/sinty-cored.service $(DESTDIR)$(PREFIX)/lib/systemd/system/sinty-cored.service
 	install -Dm644 packaging/sinty-screen.service $(DESTDIR)$(PREFIX)/lib/systemd/system/sinty-screen.service
 	install -Dm644 packaging/sinty-cored.conf $(DESTDIR)$(PREFIX)/share/dbus-1/system.d/sinty-cored.conf
+	install -Dm644 packaging/sinty-core.firewall.json $(DESTDIR)$(PREFIX)/share/sinty-firewalld/services/sinty-core.json
 
 clean:
 	rm -f sinty-cored sinty-screen sinty-v4l2-proxy
