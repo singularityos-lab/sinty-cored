@@ -53,6 +53,38 @@ func TestDiskAndNetworkOverOnePort(t *testing.T) {
 	}
 }
 
+func TestKeepsAnotherServiceFunction(t *testing.T) {
+	g := fake(t)
+	os.MkdirAll(g.dir("functions", "ffs.aoa"), 0o755)
+	os.MkdirAll(g.dir("configs", "c.1"), 0o755)
+	os.Symlink(g.dir("functions", "ffs.aoa"), g.dir("configs", "c.1", "ffs.aoa"))
+	os.WriteFile(g.dir("idVendor"), []byte("0x18d1"), 0o644)
+	os.WriteFile(g.dir("UDC"), []byte("fe980000.usb"), 0o644)
+	if err := g.Apply(Config{Network: true, Serial: "abc", Product: "Sinty Core"}); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, g.dir("idVendor")) != "0x18d1" {
+		t.Fatal("ids of the shared gadget rewritten")
+	}
+	for _, f := range []string{"ffs.aoa", "ncm.usb0"} {
+		if _, err := os.Readlink(g.dir("configs", "c.1", f)); err != nil {
+			t.Fatalf("%s not linked: %v", f, err)
+		}
+	}
+	if err := g.Apply(Config{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(g.dir("configs", "c.1", "ncm.usb0")); err == nil {
+		t.Fatal("network still on")
+	}
+	if _, err := os.Readlink(g.dir("configs", "c.1", "ffs.aoa")); err != nil {
+		t.Fatal("the other function was removed")
+	}
+	if read(t, g.dir("UDC")) != "fe980000.usb" {
+		t.Fatal("the other function lost the port")
+	}
+}
+
 func TestNoPort(t *testing.T) {
 	g := fake(t)
 	os.RemoveAll(g.UDCDir)

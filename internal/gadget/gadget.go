@@ -60,6 +60,24 @@ func (g *Gadget) Active() bool {
 	return err == nil && strings.TrimSpace(string(data)) != ""
 }
 
+var owned = map[string]bool{"ncm.usb0": true, "mass_storage.usb0": true}
+
+func (g *Gadget) foreign() (functions, links []string) {
+	entries, _ := os.ReadDir(g.dir("functions"))
+	for _, e := range entries {
+		if !owned[e.Name()] {
+			functions = append(functions, e.Name())
+		}
+	}
+	entries, _ = os.ReadDir(g.dir("configs", "c.1"))
+	for _, e := range entries {
+		if e.Type()&os.ModeSymlink != 0 && !owned[e.Name()] {
+			links = append(links, e.Name())
+		}
+	}
+	return functions, links
+}
+
 func (g *Gadget) Remove() error {
 	rmdir := g.rmdir
 	if rmdir == nil {
@@ -68,19 +86,24 @@ func (g *Gadget) Remove() error {
 	if _, err := os.Stat(g.dir()); errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
+	port := ""
+	if data, err := os.ReadFile(g.dir("UDC")); err == nil {
+		port = strings.TrimSpace(string(data))
+	}
 	write(g.dir("UDC"), "\n")
-	links, _ := os.ReadDir(g.dir("configs", "c.1"))
-	for _, l := range links {
-		if l.Type()&os.ModeSymlink != 0 {
-			os.Remove(g.dir("configs", "c.1", l.Name()))
+	for name := range owned {
+		os.Remove(g.dir("configs", "c.1", name))
+		rmdir(g.dir("functions", name))
+	}
+	functions, links := g.foreign()
+	if len(functions) > 0 {
+		if len(links) > 0 && port != "" {
+			return write(g.dir("UDC"), port)
 		}
+		return nil
 	}
 	rmdir(g.dir("configs", "c.1", "strings", "0x409"))
 	rmdir(g.dir("configs", "c.1"))
-	functions, _ := os.ReadDir(g.dir("functions"))
-	for _, f := range functions {
-		rmdir(g.dir("functions", f.Name()))
-	}
 	rmdir(g.dir("strings", "0x409"))
 	os.Remove(g.dir("functions"))
 	os.Remove(g.dir("configs"))
@@ -99,16 +122,21 @@ func (g *Gadget) Apply(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	steps := []struct{ path, value string }{
-		{g.dir("idVendor"), "0x1d6b"},
-		{g.dir("idProduct"), "0x0104"},
-		{g.dir("bcdDevice"), "0x0100"},
-		{g.dir("bcdUSB"), "0x0200"},
-		{g.dir("strings", "0x409", "manufacturer"), "Sinty"},
-		{g.dir("strings", "0x409", "product"), cfg.Product},
-		{g.dir("strings", "0x409", "serialnumber"), cfg.Serial},
-		{g.dir("configs", "c.1", "strings", "0x409", "configuration"), "Sinty Core"},
-		{g.dir("configs", "c.1", "MaxPower"), "250"},
+	shared, _ := g.foreign()
+	write(g.dir("UDC"), "\n")
+	steps := []struct{ path, value string }{}
+	if len(shared) == 0 {
+		steps = append(steps, []struct{ path, value string }{
+			{g.dir("idVendor"), "0x1d6b"},
+			{g.dir("idProduct"), "0x0104"},
+			{g.dir("bcdDevice"), "0x0100"},
+			{g.dir("bcdUSB"), "0x0200"},
+			{g.dir("strings", "0x409", "manufacturer"), "Sinty"},
+			{g.dir("strings", "0x409", "product"), cfg.Product},
+			{g.dir("strings", "0x409", "serialnumber"), cfg.Serial},
+			{g.dir("configs", "c.1", "strings", "0x409", "configuration"), "Sinty Core"},
+			{g.dir("configs", "c.1", "MaxPower"), "250"},
+		}...)
 	}
 	if cfg.Network {
 		steps = append(steps, struct{ path, value string }{g.dir("functions", "ncm.usb0", "qmult"), "5"})
